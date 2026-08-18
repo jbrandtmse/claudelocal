@@ -62,6 +62,8 @@ if /i "%~1"=="-H" (set "HOST=%~2" & shift & shift & goto parse)
 if /i "%~1"=="--host" (set "HOST=%~2" & shift & shift & goto parse)
 if /i "%~1"=="-p" (set "PORT=%~2" & shift & shift & goto parse)
 if /i "%~1"=="--port" (set "PORT=%~2" & shift & shift & goto parse)
+if /i "%~1"=="-x" (set "CONTEXT_TOKENS=%~2" & shift & shift & goto parse)
+if /i "%~1"=="--context" (set "CONTEXT_TOKENS=%~2" & shift & shift & goto parse)
 if /i "%~1"=="-k" (set "AUTH_TOKEN=%~2" & shift & shift & goto parse)
 if /i "%~1"=="--token" (set "AUTH_TOKEN=%~2" & shift & shift & goto parse)
 if /i "%~1"=="-h" goto usage
@@ -72,6 +74,7 @@ echo "!ARG!" | findstr /i /b /c:"--model=" >nul && (for /f "tokens=1,* delims=="
 echo "!ARG!" | findstr /i /b /c:"--backend=" >nul && (for /f "tokens=1,* delims==" %%X in ("!ARG!") do set "BACKEND=%%Y" & shift & goto parse)
 echo "!ARG!" | findstr /i /b /c:"--host=" >nul && (for /f "tokens=1,* delims==" %%X in ("!ARG!") do set "HOST=%%Y" & shift & goto parse)
 echo "!ARG!" | findstr /i /b /c:"--port=" >nul && (for /f "tokens=1,* delims==" %%X in ("!ARG!") do set "PORT=%%Y" & shift & goto parse)
+echo "!ARG!" | findstr /i /b /c:"--context=" >nul && (for /f "tokens=1,* delims==" %%X in ("!ARG!") do set "CONTEXT_TOKENS=%%Y" & shift & goto parse)
 echo "!ARG!" | findstr /i /b /c:"--token=" >nul && (for /f "tokens=1,* delims==" %%X in ("!ARG!") do set "AUTH_TOKEN=%%Y" & shift & goto parse)
 
 if "%~1"=="--" (
@@ -182,6 +185,8 @@ echo                         the server reports, e.g. qwen2.5-coder:7b)
 echo   -b, --backend NAME    ollama ^| lmstudio   (default: ollama or config)
 echo   -H, --host HOST       Hostname or IP of the model server (default: localhost)
 echo   -p, --port PORT       Port (default: 11434 for Ollama, 1234 for LM Studio)
+echo   -x, --context N       Context window in tokens (default: 65536 or config);
+echo                         auto-compact window is calculated as 75%% of this
 echo   -k, --token TOKEN     Auth token if the server requires one (LM Studio
 echo                         "Require Authentication"); placeholder otherwise
 echo   -c, --config FILE     Use a different config file (must be first option)

@@ -37,6 +37,8 @@ Options:
   -b, --backend NAME    ollama | lmstudio   (default: ollama or config)
   -H, --host HOST       Hostname or IP of the model server (default: localhost)
   -p, --port PORT       Port (default: 11434 for Ollama, 1234 for LM Studio)
+  -x, --context N       Context window in tokens (default: 65536 or config);
+                        auto-compact window is calculated as 75% of this
   -k, --token TOKEN     Auth token if the server requires one (LM Studio
                         "Require Authentication"); placeholder otherwise
   -c, --config FILE     Use a different config file
@@ -102,6 +104,8 @@ while [ $# -gt 0 ]; do
     --host=*)          HOST="${1#*=}"; shift ;;
     -p|--port)         PORT="${2:?missing value for $1}"; shift 2 ;;
     --port=*)          PORT="${1#*=}"; shift ;;
+    -x|--context)      CONTEXT_TOKENS="${2:?missing value for $1}"; shift 2 ;;
+    --context=*)       CONTEXT_TOKENS="${1#*=}"; shift ;;
     -k|--token)        AUTH_TOKEN="${2:?missing value for $1}"; shift 2 ;;
     --token=*)         AUTH_TOKEN="${1#*=}"; shift ;;
     -c|--config)       shift 2 ;;   # already handled in pre-pass

@@ -79,6 +79,7 @@ claudelocal [options] [--] [claude args...]
   -b, --backend NAME    ollama | lmstudio
   -H, --host HOST       Hostname or IP (may include http://)
   -p, --port PORT       Server port
+  -x, --context N       Context window in tokens (auto-compact = 75% of this)
   -k, --token TOKEN     Auth token (LM Studio "Require Authentication")
   -c, --config FILE     Alternate config file
   -h, --help            Show help
@@ -92,6 +93,7 @@ claudelocal -b lmstudio                        # talk to LM Studio instead
 claudelocal -m qwen2.5-coder:14b               # one-off model override
 claudelocal -H 192.168.1.50                    # server on another machine
 claudelocal -b lmstudio -H 192.168.1.50 -p 1234 -m "qwen3-coder-30b"
+claudelocal -x 262144                          # 256K context (compact at 196608)
 claudelocal -- --verbose                       # pass --verbose to claude
 ```
 

@@ -85,7 +85,7 @@ claudelocal [options] [--] [claude args...]
   -h, --help            Show help
 ```
 
-Anything the script doesn't recognize is passed straight through to `claude` (use `--` first if you want to be explicit):
+Anything the script doesn't recognize is passed straight through to `claude` (use `--` first if you want to be explicit). One deliberate collision is handled for you: `-p` followed by a **number** sets the port, while `-p` followed by anything else (or nothing) is passed to `claude` as its own `-p`/`--print` flag.
 
 ```powershell
 claudelocal                                    # config-file defaults

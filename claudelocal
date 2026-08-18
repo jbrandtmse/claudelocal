@@ -36,7 +36,9 @@ Options:
                         the server reports, e.g. qwen2.5-coder:7b)
   -b, --backend NAME    ollama | lmstudio   (default: ollama or config)
   -H, --host HOST       Hostname or IP of the model server (default: localhost)
-  -p, --port PORT       Port (default: 11434 for Ollama, 1234 for LM Studio)
+  -p, --port PORT       Port (default: 11434 for Ollama, 1234 for LM Studio).
+                        A non-numeric value after -p is passed to claude
+                        (claude's own -p/--print flag keeps working)
   -x, --context N       Context window in tokens (default: 65536 or config);
                         auto-compact window is calculated as 75% of this
   -k, --token TOKEN     Auth token if the server requires one (LM Studio
@@ -102,7 +104,9 @@ while [ $# -gt 0 ]; do
     --backend=*)       BACKEND="${1#*=}"; shift ;;
     -H|--host)         HOST="${2:?missing value for $1}"; shift 2 ;;
     --host=*)          HOST="${1#*=}"; shift ;;
-    -p|--port)         PORT="${2:?missing value for $1}"; shift 2 ;;
+    -p|--port)
+      # Numeric value => our port flag; otherwise it's claude's -p (print mode)
+      if [ $# -ge 2 ] && [[ "$2" =~ ^[0-9]+$ ]]; then PORT="$2"; shift 2; else CLAUDE_ARGS+=("$1"); shift; fi ;;
     --port=*)          PORT="${1#*=}"; shift ;;
     -x|--context)      CONTEXT_TOKENS="${2:?missing value for $1}"; shift 2 ;;
     --context=*)       CONTEXT_TOKENS="${1#*=}"; shift ;;

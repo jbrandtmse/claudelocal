@@ -60,8 +60,21 @@ if /i "%~1"=="-b" (set "BACKEND=%~2" & shift & shift & goto parse)
 if /i "%~1"=="--backend" (set "BACKEND=%~2" & shift & shift & goto parse)
 if /i "%~1"=="-H" (set "HOST=%~2" & shift & shift & goto parse)
 if /i "%~1"=="--host" (set "HOST=%~2" & shift & shift & goto parse)
-if /i "%~1"=="-p" (set "PORT=%~2" & shift & shift & goto parse)
-if /i "%~1"=="--port" (set "PORT=%~2" & shift & shift & goto parse)
+REM -p: numeric value => our port flag; otherwise it's claude's -p (print mode)
+if /i "%~1"=="-p" (
+  echo %~2 | findstr /r /c:"^[0-9][0-9]*$" >nul
+  if not errorlevel 1 (set "PORT=%~2" & shift & shift & goto parse)
+  set "CLAUDE_ARGS=!CLAUDE_ARGS! "%~1""
+  shift
+  goto parse
+)
+if /i "%~1"=="--port" (
+  echo %~2 | findstr /r /c:"^[0-9][0-9]*$" >nul
+  if not errorlevel 1 (set "PORT=%~2" & shift & shift & goto parse)
+  set "CLAUDE_ARGS=!CLAUDE_ARGS! "%~1""
+  shift
+  goto parse
+)
 if /i "%~1"=="-x" (set "CONTEXT_TOKENS=%~2" & shift & shift & goto parse)
 if /i "%~1"=="--context" (set "CONTEXT_TOKENS=%~2" & shift & shift & goto parse)
 if /i "%~1"=="-k" (set "AUTH_TOKEN=%~2" & shift & shift & goto parse)
@@ -184,7 +197,9 @@ echo   -m, --model NAME      Model name (overrides config; default: first model
 echo                         the server reports, e.g. qwen2.5-coder:7b)
 echo   -b, --backend NAME    ollama ^| lmstudio   (default: ollama or config)
 echo   -H, --host HOST       Hostname or IP of the model server (default: localhost)
-echo   -p, --port PORT       Port (default: 11434 for Ollama, 1234 for LM Studio)
+echo   -p, --port PORT       Port (default: 11434 for Ollama, 1234 for LM Studio).
+echo                         A non-numeric value after -p is passed to claude
+echo                         (claude's own -p/--print flag keeps working)
 echo   -x, --context N       Context window in tokens (default: 65536 or config);
 echo                         auto-compact window is calculated as 75%% of this
 echo   -k, --token TOKEN     Auth token if the server requires one (LM Studio

@@ -1,0 +1,35 @@
+# claudelocal configuration
+# Copy this file to claudelocal.conf (same folder as the script) and edit.
+# Format: KEY=VALUE, one per line. Lines starting with # are comments.
+# Any value set here can be overridden with a command-line flag.
+
+# Backend: ollama or lmstudio
+BACKEND=ollama
+
+# Hostname or IP of the machine running the model server.
+# localhost, a LAN IP (192.168.1.50), or a full URL (http://192.168.1.50) all work.
+HOST=localhost
+
+# Port. Leave blank for the backend default: 11434 (Ollama), 1234 (LM Studio).
+PORT=
+
+# Model name exactly as the server knows it (e.g. qwen2.5-coder:7b for Ollama,
+# or the identifier shown in LM Studio). Leave blank to auto-detect the first
+# model the server reports.
+MODEL=
+
+# Context window size (tokens) to tell Claude Code about. Set this to the
+# context length you configured the model with in Ollama / LM Studio.
+# LM Studio recommends >= 25k for coding agents.
+CONTEXT_TOKENS=65536
+
+# Auto-compact window (tokens): Claude Code starts compacting the conversation
+# when it approaches this size. Leave blank to auto-calculate as 75% of
+# CONTEXT_TOKENS — the recommended ~25% headroom leaves room for the model's
+# response and overhead instead of compacting at the very edge of the window.
+AUTO_COMPACT_TOKENS=
+
+# Auth token. Ollama ignores it; a placeholder is used when blank.
+# LM Studio: only needed if you enabled "Require Authentication" on the
+# server — put your LM Studio API token here (or use -k/--token).
+AUTH_TOKEN=

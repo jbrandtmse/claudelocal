@@ -1,0 +1,194 @@
+#!/usr/bin/env bash
+# claudelocal - run Claude Code CLI against a local model hosted on Ollama or LM Studio.
+# Works with localhost or any reachable host/IP on your network.
+#
+#   Ollama:    Anthropic-compatible endpoint at http://<host>:11434  (no /v1 suffix)
+#   LM Studio: Anthropic-compatible endpoint at http://<host>:1234   (no /v1 suffix)
+#
+# Docs:
+#   https://docs.ollama.com/integrations/claude-code
+#   https://lmstudio.ai/docs/integrations/claude-code
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# ---------------------------------------------------------------------------
+# Defaults (overridden by config file, then by command-line flags)
+# ---------------------------------------------------------------------------
+BACKEND="ollama"          # ollama | lmstudio
+HOST="localhost"          # hostname or IP; may include http:// scheme
+PORT=""                   # blank = backend default (11434 ollama / 1234 lmstudio)
+MODEL=""                  # blank = auto-detect first model the server reports
+CONTEXT_TOKENS="65536"    # context window to tell Claude Code about
+AUTO_COMPACT_TOKENS=""    # blank = auto-calculate as 75% of CONTEXT_TOKENS
+AUTH_TOKEN=""             # blank = placeholder ("ollama" / "lmstudio")
+
+CONFIG_FILE="$SCRIPT_DIR/claudelocal.conf"
+
+usage() {
+  cat <<'EOF'
+claudelocal - run Claude Code against a local Ollama or LM Studio model.
+
+Usage: claudelocal [options] [--] [claude args...]
+
+Options:
+  -m, --model NAME      Model name (overrides config; default: first model
+                        the server reports, e.g. qwen2.5-coder:7b)
+  -b, --backend NAME    ollama | lmstudio   (default: ollama or config)
+  -H, --host HOST       Hostname or IP of the model server (default: localhost)
+  -p, --port PORT       Port (default: 11434 for Ollama, 1234 for LM Studio)
+  -k, --token TOKEN     Auth token if the server requires one (LM Studio
+                        "Require Authentication"); placeholder otherwise
+  -c, --config FILE     Use a different config file
+  -h, --help            Show this help
+
+Any other arguments are passed through to claude, e.g.:
+
+  claudelocal -m qwen2.5-coder:14b -- --verbose
+  claudelocal -b lmstudio -H 192.168.1.50 -p 1234
+
+Config file: claudelocal.conf next to this script (see claudelocal.conf.example).
+Precedence: command-line flag > config file > built-in default.
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# Pre-pass: find -c/--config so it can be honored before reading the config
+# ---------------------------------------------------------------------------
+PREV=""
+for ARG in "$@"; do
+  if [ "$PREV" = "config" ]; then CONFIG_FILE="$ARG"; PREV=""; continue; fi
+  case "$ARG" in
+    -c|--config) PREV="config" ;;
+    --config=*)  CONFIG_FILE="${ARG#*=}" ;;
+  esac
+done
+
+# ---------------------------------------------------------------------------
+# Config file (simple KEY=VALUE, # comments, blank lines ok)
+# ---------------------------------------------------------------------------
+if [ -f "$CONFIG_FILE" ]; then
+  while IFS= read -r LINE || [ -n "$LINE" ]; do
+    LINE="${LINE%%#*}"                              # strip comments
+    LINE="$(echo "$LINE" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    [ -z "$LINE" ] && continue
+    KEY="${LINE%%=*}"; VALUE="${LINE#*=}"
+    KEY="$(echo "$KEY" | sed 's/[[:space:]]*$//')"
+    VALUE="$(echo "$VALUE" | sed 's/^[[:space:]]*//;s/^["'\'']//;s/["'\'']$//')"
+    case "$KEY" in
+      BACKEND)        BACKEND="$VALUE" ;;
+      HOST)           HOST="$VALUE" ;;
+      PORT)           PORT="$VALUE" ;;
+      MODEL)          MODEL="$VALUE" ;;
+      CONTEXT_TOKENS) CONTEXT_TOKENS="$VALUE" ;;
+      AUTO_COMPACT_TOKENS) AUTO_COMPACT_TOKENS="$VALUE" ;;
+      AUTH_TOKEN)     AUTH_TOKEN="$VALUE" ;;
+      *) echo "claudelocal: warning: ignoring unknown config key '$KEY'" >&2 ;;
+    esac
+  done < "$CONFIG_FILE"
+fi
+
+# ---------------------------------------------------------------------------
+# Command-line flags (unknown args pass through to claude)
+# ---------------------------------------------------------------------------
+CLAUDE_ARGS=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -m|--model)        MODEL="${2:?missing value for $1}"; shift 2 ;;
+    --model=*)         MODEL="${1#*=}"; shift ;;
+    -b|--backend)      BACKEND="${2:?missing value for $1}"; shift 2 ;;
+    --backend=*)       BACKEND="${1#*=}"; shift ;;
+    -H|--host)         HOST="${2:?missing value for $1}"; shift 2 ;;
+    --host=*)          HOST="${1#*=}"; shift ;;
+    -p|--port)         PORT="${2:?missing value for $1}"; shift 2 ;;
+    --port=*)          PORT="${1#*=}"; shift ;;
+    -k|--token)        AUTH_TOKEN="${2:?missing value for $1}"; shift 2 ;;
+    --token=*)         AUTH_TOKEN="${1#*=}"; shift ;;
+    -c|--config)       shift 2 ;;   # already handled in pre-pass
+    --config=*)        shift ;;
+    -h|--help)         usage; exit 0 ;;
+    --)                shift; while [ $# -gt 0 ]; do CLAUDE_ARGS+=("$1"); shift; done ;;
+    *)                 CLAUDE_ARGS+=("$1"); shift ;;
+  esac
+done
+
+# ---------------------------------------------------------------------------
+# Resolve backend-specific defaults
+# ---------------------------------------------------------------------------
+case "$(echo "$BACKEND" | tr '[:upper:]' '[:lower:]')" in
+  ollama)             BACKEND="ollama";   DEFAULT_PORT="11434" ;;
+  lmstudio|lm-studio|lms) BACKEND="lmstudio"; DEFAULT_PORT="1234" ;;
+  *) echo "claudelocal: ERROR: unknown backend '$BACKEND' (expected 'ollama' or 'lmstudio')" >&2; exit 1 ;;
+esac
+
+[ -z "$PORT" ] && PORT="$DEFAULT_PORT"
+
+# Build the base URL (HOST may be a bare host/IP or a full URL)
+HOST="${HOST%/}"
+case "$HOST" in
+  http://*|https://*) BASE_URL="$HOST" ;;
+  *)                  BASE_URL="http://$HOST" ;;
+esac
+case "$BASE_URL" in
+  *:"$PORT") : ;;                       # port already in the URL
+  *)         BASE_URL="$BASE_URL:$PORT" ;;
+esac
+
+[ -z "$AUTH_TOKEN" ] && AUTH_TOKEN="$BACKEND"   # non-empty placeholder; not validated locally
+
+# ---------------------------------------------------------------------------
+# Reachability check + model auto-detect
+# ---------------------------------------------------------------------------
+MODELS_JSON=""
+if command -v curl >/dev/null 2>&1; then
+  MODELS_JSON="$(curl -s -m 5 "$BASE_URL/v1/models" 2>/dev/null || true)"
+  if [ -z "$MODELS_JSON" ]; then
+    echo "claudelocal: WARNING: could not reach $BASE_URL" >&2
+    echo "  Is the $BACKEND server running on $HOST:$PORT? Continuing anyway..." >&2
+  fi
+fi
+
+if [ -z "$MODEL" ]; then
+  if [ -n "$MODELS_JSON" ]; then
+    MODEL="$(printf '%s' "$MODELS_JSON" | grep -o '"id"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n 1 | cut -d'"' -f4)"
+  fi
+  if [ -z "$MODEL" ]; then
+    echo "claudelocal: ERROR: no model configured and none could be auto-detected." >&2
+    echo "  Set MODEL in claudelocal.conf or pass -m/--model." >&2
+    exit 1
+  fi
+  echo "claudelocal: auto-detected model '$MODEL'"
+fi
+
+# ---------------------------------------------------------------------------
+# Environment for the launched Claude Code session
+# ---------------------------------------------------------------------------
+export ANTHROPIC_BASE_URL="$BASE_URL"
+export ANTHROPIC_AUTH_TOKEN="$AUTH_TOKEN"
+unset ANTHROPIC_API_KEY     # avoid a stray cloud key taking precedence
+
+# Every model tier and subagent uses the same local model
+export ANTHROPIC_MODEL="$MODEL"
+export ANTHROPIC_DEFAULT_FABLE_MODEL="$MODEL"
+export ANTHROPIC_DEFAULT_OPUS_MODEL="$MODEL"
+export ANTHROPIC_DEFAULT_SONNET_MODEL="$MODEL"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL="$MODEL"
+export ANTHROPIC_SMALL_FAST_MODEL="$MODEL"
+export CLAUDE_CODE_SUBAGENT_MODEL="$MODEL"
+
+# Auto-compact window: leave ~25% headroom below the real context window so
+# compaction starts at ~70-75% usage, with room for the response and overhead.
+if [ -z "$AUTO_COMPACT_TOKENS" ]; then
+  AUTO_COMPACT_TOKENS=$(( CONTEXT_TOKENS * 3 / 4 ))
+fi
+
+# Context / compaction tuned to the local model's window
+export CLAUDE_CODE_MAX_CONTEXT_TOKENS="$CONTEXT_TOKENS"
+export CLAUDE_CODE_AUTO_COMPACT_WINDOW="$AUTO_COMPACT_TOKENS"
+
+# Keep the session local-first; tool search targets Anthropic's backend
+export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+export ENABLE_TOOL_SEARCH=false
+
+echo "claudelocal: backend=$BACKEND url=$BASE_URL model=$MODEL context=$CONTEXT_TOKENS compact=$AUTO_COMPACT_TOKENS"
+exec claude "${CLAUDE_ARGS[@]}"

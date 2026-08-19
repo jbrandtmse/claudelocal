@@ -66,6 +66,7 @@ MODEL=                   # blank = auto-detect from the server
 CONTEXT_TOKENS=65536     # context window Claude Code should assume
 AUTO_COMPACT_TOKENS=     # blank = auto-calculated (75% of CONTEXT_TOKENS)
 AUTH_TOKEN=              # only needed for LM Studio "Require Authentication"
+TIMEOUT_MS=              # blank = Claude Code's own default (600000 / 10 min)
 ```
 
 > **If you put a real LM Studio token in `claudelocal.conf`, don't commit it to source control.** The provided `.gitignore` already excludes it.
@@ -81,6 +82,7 @@ claudelocal [options] [--] [claude args...]
   -p, --port PORT       Server port
   -x, --context N       Context window in tokens (auto-compact = 75% of this)
   -k, --token TOKEN     Auth token (LM Studio "Require Authentication")
+  -t, --timeout MS      API request timeout in milliseconds (default: 600000)
   -c, --config FILE     Alternate config file
   -h, --help            Show help
 ```
@@ -94,6 +96,7 @@ claudelocal -m qwen2.5-coder:14b               # one-off model override
 claudelocal -H 192.168.1.50                    # server on another machine
 claudelocal -b lmstudio -H 192.168.1.50 -p 1234 -m "qwen3-coder-30b"
 claudelocal -x 262144                          # 256K context (compact at 196608)
+claudelocal -t 1200000                         # raise API timeout to 20 minutes
 claudelocal -- --verbose                       # pass --verbose to claude
 ```
 
@@ -200,6 +203,7 @@ curl http://localhost:1234/v1/models     # LM Studio
 | `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | `AUTO_COMPACT_TOKENS` (default: 75% of `CONTEXT_TOKENS`) | Auto-compaction calibrated to leave ~25% headroom below the real window |
 | `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` | `1` | Keeps the session local-first; no calls to Anthropic services |
 | `ENABLE_TOOL_SEARCH` | `false` | Tool search is specific to Anthropic's backend |
+| `API_TIMEOUT_MS` | `TIMEOUT_MS` (only set if configured) | Per-request timeout; raise it if slow local inference triggers "API Error (Request timed out)" |
 
 ## Tuning the context window
 
@@ -220,6 +224,18 @@ AUTO_COMPACT_TOKENS = CONTEXT_TOKENS × 0.75   (when not set explicitly)
 
 so for `CONTEXT_TOKENS=65536` the compact window is `49152`, and compaction fires around 70% of the real window rather than at its edge. The launch banner shows both numbers so you can confirm. To override, set `AUTO_COMPACT_TOKENS` in `claudelocal.conf`.
 
+## Tuning the API request timeout
+
+Claude Code times out a request if it doesn't get a response within `API_TIMEOUT_MS` (default `600000`, i.e. 10 minutes). Local models can exceed that on modest hardware, with large `CONTEXT_TOKENS`, or with reasoning models that emit a long hidden "thinking" pass before the visible answer — surfacing as `API Error (Request timed out)`.
+
+Set `TIMEOUT_MS` in `claudelocal.conf` or pass `-t`/`--timeout` to raise it, e.g.:
+
+```sh
+claudelocal -t 1200000   # 20 minutes
+```
+
+Leave it blank to keep Claude Code's own default — raising it only masks a real problem (undersized hardware, an oversized `CONTEXT_TOKENS`, or a wedged server) if the request was never going to finish.
+
 ## Troubleshooting
 
 - **`WARNING: could not reach http://...`** — the server isn't running, is on a different port, or a firewall is blocking the LAN port. Verify with `curl http://<host>:<port>/v1/models`.
@@ -230,6 +246,7 @@ so for `CONTEXT_TOKENS=65536` the compact window is `49152`, and compaction fire
 - **Answers degrade or get cut off on long sessions** — your `CONTEXT_TOKENS` is larger than the model's actual context (see *Tuning the context window*), or the model is simply too small for agentic coding. Prefer coding-tuned models (e.g. Qwen coder variants) with the largest context your hardware allows.
 - **Claude Code asks to save an API key** — answer **No**; the placeholder token is only for the local session.
 - **First response takes a minute or more (looks hung)** — reasoning/thinking models (e.g. Qwen3 variants) emit hidden `reasoning_content` before their real answer, and Claude Code's system prompt + tool definitions are large, so the initial prompt-processing pass can take 30-60+ seconds on consumer hardware — especially with a large `CONTEXT_TOKENS`. This is normal; subsequent turns in the same session are typically faster once the prompt is cached. Check the server's own logs (Ollama's console output, or LM Studio's `~/.lmstudio/server-logs/`) for prompt-processing progress if you want to confirm it's still working rather than stuck.
+- **`API Error (Request timed out.)`** — the request exceeded `API_TIMEOUT_MS` (default 10 minutes). Set `TIMEOUT_MS` in `claudelocal.conf` or pass `-t`/`--timeout` to raise it (see *Tuning the API request timeout*).
 
 ## License
 

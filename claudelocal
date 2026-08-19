@@ -32,6 +32,7 @@ MODEL=""                  # blank = auto-detect first model the server reports
 CONTEXT_TOKENS="65536"    # context window to tell Claude Code about
 AUTO_COMPACT_TOKENS=""    # blank = auto-calculate as 75% of CONTEXT_TOKENS
 AUTH_TOKEN=""             # blank = placeholder ("ollama" / "lmstudio")
+TIMEOUT_MS=""             # blank = Claude Code's own default (600000ms / 10 min)
 
 CONFIG_FILE="$SCRIPT_DIR/claudelocal.conf"
 
@@ -53,6 +54,10 @@ Options:
                         auto-compact window is calculated as 75% of this
   -k, --token TOKEN     Auth token if the server requires one (LM Studio
                         "Require Authentication"); placeholder otherwise
+  -t, --timeout MS      API request timeout in milliseconds (default: Claude
+                        Code's own default of 600000 / 10 min). Raise this if
+                        slow local inference causes "API Error (Request timed
+                        out)"
   -c, --config FILE     Use a different config file
   -h, --help            Show this help
 
@@ -97,6 +102,7 @@ if [ -f "$CONFIG_FILE" ]; then
       CONTEXT_TOKENS) CONTEXT_TOKENS="$VALUE" ;;
       AUTO_COMPACT_TOKENS) AUTO_COMPACT_TOKENS="$VALUE" ;;
       AUTH_TOKEN)     AUTH_TOKEN="$VALUE" ;;
+      TIMEOUT_MS)     TIMEOUT_MS="$VALUE" ;;
       *) echo "claudelocal: warning: ignoring unknown config key '$KEY'" >&2 ;;
     esac
   done < "$CONFIG_FILE"
@@ -122,6 +128,8 @@ while [ $# -gt 0 ]; do
     --context=*)       CONTEXT_TOKENS="${1#*=}"; shift ;;
     -k|--token)        AUTH_TOKEN="${2:?missing value for $1}"; shift 2 ;;
     --token=*)         AUTH_TOKEN="${1#*=}"; shift ;;
+    -t|--timeout)      TIMEOUT_MS="${2:?missing value for $1}"; shift 2 ;;
+    --timeout=*)       TIMEOUT_MS="${1#*=}"; shift ;;
     -c|--config)       shift 2 ;;   # already handled in pre-pass
     --config=*)        shift ;;
     -h|--help)         usage; exit 0 ;;
@@ -208,5 +216,10 @@ export CLAUDE_CODE_AUTO_COMPACT_WINDOW="$AUTO_COMPACT_TOKENS"
 export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 export ENABLE_TOOL_SEARCH=false
 
-echo "claudelocal: backend=$BACKEND url=$BASE_URL model=$MODEL context=$CONTEXT_TOKENS compact=$AUTO_COMPACT_TOKENS"
+# Per-request API timeout: only override Claude Code's own default (600000ms)
+# when the user configured one, since slow local inference is often fine at
+# the default and we shouldn't silently mask other problems.
+[ -n "$TIMEOUT_MS" ] && export API_TIMEOUT_MS="$TIMEOUT_MS"
+
+echo "claudelocal: backend=$BACKEND url=$BASE_URL model=$MODEL context=$CONTEXT_TOKENS compact=$AUTO_COMPACT_TOKENS${TIMEOUT_MS:+ timeout=$TIMEOUT_MS}"
 exec claude "${CLAUDE_ARGS[@]+"${CLAUDE_ARGS[@]}"}"

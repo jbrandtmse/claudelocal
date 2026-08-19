@@ -20,6 +20,7 @@ set "MODEL="
 set "CONTEXT_TOKENS=65536"
 set "AUTO_COMPACT_TOKENS="
 set "AUTH_TOKEN="
+set "TIMEOUT_MS="
 set "CONFIG_FILE=%~dp0claudelocal.conf"
 set "CLAUDE_ARGS="
 
@@ -44,6 +45,7 @@ if exist "%CONFIG_FILE%" (
     if /i "!CKEY!"=="CONTEXT_TOKENS" set "CONTEXT_TOKENS=!CVAL!"
     if /i "!CKEY!"=="AUTO_COMPACT_TOKENS" set "AUTO_COMPACT_TOKENS=!CVAL!"
     if /i "!CKEY!"=="AUTH_TOKEN" set "AUTH_TOKEN=!CVAL!"
+    if /i "!CKEY!"=="TIMEOUT_MS" set "TIMEOUT_MS=!CVAL!"
   )
 )
 
@@ -79,6 +81,8 @@ if /i "%~1"=="-x" (set "CONTEXT_TOKENS=%~2" & shift & shift & goto parse)
 if /i "%~1"=="--context" (set "CONTEXT_TOKENS=%~2" & shift & shift & goto parse)
 if /i "%~1"=="-k" (set "AUTH_TOKEN=%~2" & shift & shift & goto parse)
 if /i "%~1"=="--token" (set "AUTH_TOKEN=%~2" & shift & shift & goto parse)
+if /i "%~1"=="-t" (set "TIMEOUT_MS=%~2" & shift & shift & goto parse)
+if /i "%~1"=="--timeout" (set "TIMEOUT_MS=%~2" & shift & shift & goto parse)
 if /i "%~1"=="-h" goto usage
 if /i "%~1"=="--help" goto usage
 
@@ -89,6 +93,7 @@ echo "!ARG!" | findstr /i /b /c:"--host=" >nul && (for /f "tokens=1,* delims==" 
 echo "!ARG!" | findstr /i /b /c:"--port=" >nul && (for /f "tokens=1,* delims==" %%X in ("!ARG!") do set "PORT=%%Y" & shift & goto parse)
 echo "!ARG!" | findstr /i /b /c:"--context=" >nul && (for /f "tokens=1,* delims==" %%X in ("!ARG!") do set "CONTEXT_TOKENS=%%Y" & shift & goto parse)
 echo "!ARG!" | findstr /i /b /c:"--token=" >nul && (for /f "tokens=1,* delims==" %%X in ("!ARG!") do set "AUTH_TOKEN=%%Y" & shift & goto parse)
+echo "!ARG!" | findstr /i /b /c:"--timeout=" >nul && (for /f "tokens=1,* delims==" %%X in ("!ARG!") do set "TIMEOUT_MS=%%Y" & shift & goto parse)
 
 if "%~1"=="--" (
   shift
@@ -183,7 +188,15 @@ REM Keep the session local-first; tool search targets Anthropic's backend
 set "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"
 set "ENABLE_TOOL_SEARCH=false"
 
-echo claudelocal: backend=%BACKEND% url=%BASE_URL% model=%MODEL% context=%CONTEXT_TOKENS% compact=%AUTO_COMPACT_TOKENS%
+REM Per-request API timeout: only override Claude Code's own default
+REM (600000ms) when the user configured one.
+set "TIMEOUT_MSG="
+if not "%TIMEOUT_MS%"=="" (
+  set "API_TIMEOUT_MS=%TIMEOUT_MS%"
+  set "TIMEOUT_MSG= timeout=%TIMEOUT_MS%"
+)
+
+echo claudelocal: backend=%BACKEND% url=%BASE_URL% model=%MODEL% context=%CONTEXT_TOKENS% compact=%AUTO_COMPACT_TOKENS%%TIMEOUT_MSG%
 call claude %CLAUDE_ARGS%
 exit /b %errorlevel%
 
@@ -204,6 +217,10 @@ echo   -x, --context N       Context window in tokens (default: 65536 or config)
 echo                         auto-compact window is calculated as 75%% of this
 echo   -k, --token TOKEN     Auth token if the server requires one (LM Studio
 echo                         "Require Authentication"); placeholder otherwise
+echo   -t, --timeout MS      API request timeout in milliseconds (default:
+echo                         Claude Code's own default of 600000 / 10 min).
+echo                         Raise this if slow local inference causes "API
+echo                         Error (Request timed out)"
 echo   -c, --config FILE     Use a different config file (must be first option)
 echo   -h, --help            Show this help
 echo.

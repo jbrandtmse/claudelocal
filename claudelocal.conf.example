@@ -36,3 +36,10 @@ AUTO_COMPACT_TOKENS=
 # LM Studio: only needed if you enabled "Require Authentication" on the
 # server — put your LM Studio API token here (or use -k/--token).
 AUTH_TOKEN=
+
+# API request timeout (milliseconds). Leave blank to use Claude Code's own
+# default (600000 = 10 minutes). Raise this if slow local inference causes
+# "API Error (Request timed out)" — e.g. large models on modest hardware, or
+# reasoning models with long hidden "thinking" passes.
+# Example: TIMEOUT_MS=1200000  (20 minutes)
+TIMEOUT_MS=

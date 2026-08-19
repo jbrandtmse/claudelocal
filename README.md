@@ -229,6 +229,7 @@ so for `CONTEXT_TOKENS=65536` the compact window is `49152`, and compaction fire
 - **Model not found errors** — the model name must match exactly what the server reports (`ollama list`, or the identifier in LM Studio), including tags like `:7b`.
 - **Answers degrade or get cut off on long sessions** — your `CONTEXT_TOKENS` is larger than the model's actual context (see *Tuning the context window*), or the model is simply too small for agentic coding. Prefer coding-tuned models (e.g. Qwen coder variants) with the largest context your hardware allows.
 - **Claude Code asks to save an API key** — answer **No**; the placeholder token is only for the local session.
+- **First response takes a minute or more (looks hung)** — reasoning/thinking models (e.g. Qwen3 variants) emit hidden `reasoning_content` before their real answer, and Claude Code's system prompt + tool definitions are large, so the initial prompt-processing pass can take 30-60+ seconds on consumer hardware — especially with a large `CONTEXT_TOKENS`. This is normal; subsequent turns in the same session are typically faster once the prompt is cached. Check the server's own logs (Ollama's console output, or LM Studio's `~/.lmstudio/server-logs/`) for prompt-processing progress if you want to confirm it's still working rather than stuck.
 
 ## License
 

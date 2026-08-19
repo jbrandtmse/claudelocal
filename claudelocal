@@ -199,4 +199,4 @@ export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 export ENABLE_TOOL_SEARCH=false
 
 echo "claudelocal: backend=$BACKEND url=$BASE_URL model=$MODEL context=$CONTEXT_TOKENS compact=$AUTO_COMPACT_TOKENS"
-exec claude "${CLAUDE_ARGS[@]}"
+exec claude "${CLAUDE_ARGS[@]+"${CLAUDE_ARGS[@]}"}"

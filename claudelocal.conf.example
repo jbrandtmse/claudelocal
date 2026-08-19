@@ -11,16 +11,19 @@ BACKEND=ollama
 HOST=localhost
 
 # Port. Leave blank for the backend default: 11434 (Ollama), 1234 (LM Studio).
+# Example for LM Studio: PORT=1234
 PORT=
 
 # Model name exactly as the server knows it (e.g. qwen2.5-coder:7b for Ollama,
 # or the identifier shown in LM Studio). Leave blank to auto-detect the first
 # model the server reports.
+# Example for LM Studio: MODEL=qwen/qwen3.8-27b
 MODEL=
 
 # Context window size (tokens) to tell Claude Code about. Set this to the
 # context length you configured the model with in Ollama / LM Studio.
 # LM Studio recommends >= 25k for coding agents.
+# Example if you loaded the model with a 256K context: CONTEXT_TOKENS=262144
 CONTEXT_TOKENS=65536
 
 # Auto-compact window (tokens): Claude Code starts compacting the conversation

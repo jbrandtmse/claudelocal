@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
-# claudelocal - run Claude Code CLI against a local model hosted on Ollama or LM Studio.
-# Works with localhost or any reachable host/IP on your network.
+# claudelocal - run Claude Code CLI against a local model hosted on Ollama,
+# LM Studio, or oMLX. Works with localhost or any reachable host/IP on your network.
 #
 #   Ollama:    Anthropic-compatible endpoint at http://<host>:11434  (no /v1 suffix)
 #   LM Studio: Anthropic-compatible endpoint at http://<host>:1234   (no /v1 suffix)
+#   oMLX:      Anthropic-compatible endpoint at http://<host>:8000   (no /v1 suffix)
 #
 # Docs:
 #   https://docs.ollama.com/integrations/claude-code
 #   https://lmstudio.ai/docs/integrations/claude-code
+#   https://github.com/jundot/omlx
 set -euo pipefail
 
 resolve_script_dir() {
@@ -25,35 +27,37 @@ SCRIPT_DIR="$(resolve_script_dir "${BASH_SOURCE[0]}")"
 # ---------------------------------------------------------------------------
 # Defaults (overridden by config file, then by command-line flags)
 # ---------------------------------------------------------------------------
-BACKEND="ollama"          # ollama | lmstudio
+BACKEND="ollama"          # ollama | lmstudio | omlx
 HOST="localhost"          # hostname or IP; may include http:// scheme
-PORT=""                   # blank = backend default (11434 ollama / 1234 lmstudio)
+PORT=""                   # blank = backend default (11434 ollama / 1234 lmstudio / 8000 omlx)
 MODEL=""                  # blank = auto-detect first model the server reports
 CONTEXT_TOKENS="65536"    # context window to tell Claude Code about
 AUTO_COMPACT_TOKENS=""    # blank = auto-calculate as 75% of CONTEXT_TOKENS
-AUTH_TOKEN=""             # blank = placeholder ("ollama" / "lmstudio")
+AUTH_TOKEN=""             # blank = placeholder ("ollama" / "lmstudio" / "omlx")
 TIMEOUT_MS=""             # blank = Claude Code's own default (600000ms / 10 min)
 
 CONFIG_FILE="$SCRIPT_DIR/claudelocal.conf"
 
 usage() {
   cat <<'EOF'
-claudelocal - run Claude Code against a local Ollama or LM Studio model.
+claudelocal - run Claude Code against a local Ollama, LM Studio, or oMLX model.
 
 Usage: claudelocal [options] [--] [claude args...]
 
 Options:
   -m, --model NAME      Model name (overrides config; default: first model
                         the server reports, e.g. qwen2.5-coder:7b)
-  -b, --backend NAME    ollama | lmstudio   (default: ollama or config)
+  -b, --backend NAME    ollama | lmstudio | omlx   (default: ollama or config)
   -H, --host HOST       Hostname or IP of the model server (default: localhost)
-  -p, --port PORT       Port (default: 11434 for Ollama, 1234 for LM Studio).
+  -p, --port PORT       Port (default: 11434 for Ollama, 1234 for LM Studio,
+                        8000 for oMLX).
                         A non-numeric value after -p is passed to claude
                         (claude's own -p/--print flag keeps working)
   -x, --context N       Context window in tokens (default: 65536 or config);
                         auto-compact window is calculated as 75% of this
   -k, --token TOKEN     Auth token if the server requires one (LM Studio
-                        "Require Authentication"); placeholder otherwise
+                        "Require Authentication", or the oMLX API key);
+                        placeholder otherwise
   -t, --timeout MS      API request timeout in milliseconds (default: Claude
                         Code's own default of 600000 / 10 min). Raise this if
                         slow local inference causes "API Error (Request timed
@@ -144,7 +148,8 @@ done
 case "$(echo "$BACKEND" | tr '[:upper:]' '[:lower:]')" in
   ollama)             BACKEND="ollama";   DEFAULT_PORT="11434" ;;
   lmstudio|lm-studio|lms) BACKEND="lmstudio"; DEFAULT_PORT="1234" ;;
-  *) echo "claudelocal: ERROR: unknown backend '$BACKEND' (expected 'ollama' or 'lmstudio')" >&2; exit 1 ;;
+  omlx)               BACKEND="omlx";     DEFAULT_PORT="8000" ;;
+  *) echo "claudelocal: ERROR: unknown backend '$BACKEND' (expected 'ollama', 'lmstudio', or 'omlx')" >&2; exit 1 ;;
 esac
 
 [ -z "$PORT" ] && PORT="$DEFAULT_PORT"
@@ -165,13 +170,28 @@ esac
 # ---------------------------------------------------------------------------
 # Reachability check + model auto-detect
 # ---------------------------------------------------------------------------
+# The token is sent because oMLX (and LM Studio with "Require Authentication")
+# reject unauthenticated /v1/models requests; servers without auth ignore it.
 MODELS_JSON=""
 if command -v curl >/dev/null 2>&1; then
-  MODELS_JSON="$(curl -s -m 5 "$BASE_URL/v1/models" 2>/dev/null || true)"
-  if [ -z "$MODELS_JSON" ]; then
-    echo "claudelocal: WARNING: could not reach $BASE_URL" >&2
-    echo "  Is the $BACKEND server running on $HOST:$PORT? Continuing anyway..." >&2
-  fi
+  MODELS_RESP="$(curl -s -m 5 -w '\n%{http_code}' -H "Authorization: Bearer $AUTH_TOKEN" "$BASE_URL/v1/models" 2>/dev/null || true)"
+  HTTP_CODE="${MODELS_RESP##*$'\n'}"
+  MODELS_JSON="${MODELS_RESP%$'\n'*}"
+  case "$HTTP_CODE" in
+    200) ;;
+    401|403)
+      MODELS_JSON=""
+      echo "claudelocal: WARNING: $BASE_URL rejected the auth token (HTTP $HTTP_CODE)" >&2
+      echo "  Set AUTH_TOKEN in claudelocal.conf or pass -k/--token (the oMLX API key," >&2
+      echo "  or the LM Studio token). Continuing anyway..." >&2 ;;
+    000|"")
+      MODELS_JSON=""
+      echo "claudelocal: WARNING: could not reach $BASE_URL" >&2
+      echo "  Is the $BACKEND server running on $HOST:$PORT? Continuing anyway..." >&2 ;;
+    *)
+      MODELS_JSON=""
+      echo "claudelocal: WARNING: $BASE_URL/v1/models returned HTTP $HTTP_CODE. Continuing anyway..." >&2 ;;
+  esac
 fi
 
 if [ -z "$MODEL" ]; then
@@ -212,9 +232,29 @@ fi
 export CLAUDE_CODE_MAX_CONTEXT_TOKENS="$CONTEXT_TOKENS"
 export CLAUDE_CODE_AUTO_COMPACT_WINDOW="$AUTO_COMPACT_TOKENS"
 
-# Keep the session local-first; tool search targets Anthropic's backend
+# Keep the session local-first. Tool search needs an API that honors
+# defer_loading and tool_reference blocks; Ollama, LM Studio, and oMLX don't.
 export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 export ENABLE_TOOL_SEARCH=false
+
+# Omit the attribution block (client version + prompt fingerprint) from the
+# start of the system prompt so it can't disturb the server's prompt cache.
+# Recommended by LM Studio and oMLX.
+export CLAUDE_CODE_ATTRIBUTION_HEADER=0
+
+# oMLX: deny the LSP tool. Its schema is added to the tools array when a
+# language server connects mid-session, which forces oMLX to re-prefill the
+# whole conversation. Skipped if the user passes their own --disallowedTools.
+# The =form keeps the variadic option from swallowing a following prompt.
+if [ "$BACKEND" = "omlx" ]; then
+  DENY_LSP=1
+  for ARG in "${CLAUDE_ARGS[@]+"${CLAUDE_ARGS[@]}"}"; do
+    case "$ARG" in --disallowedTools|--disallowedTools=*|--disallowed-tools|--disallowed-tools=*) DENY_LSP=0 ;; esac
+  done
+  if [ "$DENY_LSP" = 1 ]; then
+    CLAUDE_ARGS=("--disallowedTools=LSP" "${CLAUDE_ARGS[@]+"${CLAUDE_ARGS[@]}"}")
+  fi
+fi
 
 # Per-request API timeout: only override Claude Code's own default (600000ms)
 # when the user configured one, since slow local inference is often fine at

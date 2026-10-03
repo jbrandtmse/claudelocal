@@ -1,14 +1,16 @@
 @echo off
 setlocal enabledelayedexpansion
-REM claudelocal - run Claude Code CLI against a local model hosted on Ollama or LM Studio.
-REM Works with localhost or any reachable host/IP on your network.
+REM claudelocal - run Claude Code CLI against a local model hosted on Ollama,
+REM LM Studio, or oMLX. Works with localhost or any reachable host/IP on your network.
 REM
 REM   Ollama:    Anthropic-compatible endpoint at http://<host>:11434
 REM   LM Studio: Anthropic-compatible endpoint at http://<host>:1234
+REM   oMLX:      Anthropic-compatible endpoint at http://<host>:8000
 REM
 REM Docs:
 REM   https://docs.ollama.com/integrations/claude-code
 REM   https://lmstudio.ai/docs/integrations/claude-code
+REM   https://github.com/jundot/omlx
 
 REM ---------------------------------------------------------------------------
 REM Defaults (overridden by config file, then by command-line flags)
@@ -62,16 +64,17 @@ if /i "%~1"=="-b" (set "BACKEND=%~2" & shift & shift & goto parse)
 if /i "%~1"=="--backend" (set "BACKEND=%~2" & shift & shift & goto parse)
 if /i "%~1"=="-H" (set "HOST=%~2" & shift & shift & goto parse)
 if /i "%~1"=="--host" (set "HOST=%~2" & shift & shift & goto parse)
-REM -p: numeric value => our port flag; otherwise it's claude's -p (print mode)
+REM -p: numeric value => our port flag; otherwise it's claude's -p (print mode).
+REM No space before the pipe: echo would pass it on and break the $ anchor.
 if /i "%~1"=="-p" (
-  echo %~2 | findstr /r /c:"^[0-9][0-9]*$" >nul
+  echo %~2| findstr /r /c:"^[0-9][0-9]*$" >nul
   if not errorlevel 1 (set "PORT=%~2" & shift & shift & goto parse)
   set "CLAUDE_ARGS=!CLAUDE_ARGS! "%~1""
   shift
   goto parse
 )
 if /i "%~1"=="--port" (
-  echo %~2 | findstr /r /c:"^[0-9][0-9]*$" >nul
+  echo %~2| findstr /r /c:"^[0-9][0-9]*$" >nul
   if not errorlevel 1 (set "PORT=%~2" & shift & shift & goto parse)
   set "CLAUDE_ARGS=!CLAUDE_ARGS! "%~1""
   shift
@@ -116,14 +119,19 @@ goto passthru
 REM ---------------------------------------------------------------------------
 REM Resolve backend-specific defaults
 REM ---------------------------------------------------------------------------
+if /i "%BACKEND%"=="ollama" set "BACKEND=ollama"
+if /i "%BACKEND%"=="lmstudio" set "BACKEND=lmstudio"
 if /i "%BACKEND%"=="lms" set "BACKEND=lmstudio"
 if /i "%BACKEND%"=="lm-studio" set "BACKEND=lmstudio"
-if /i not "%BACKEND%"=="ollama" if /i not "%BACKEND%"=="lmstudio" (
-  echo claudelocal: ERROR: unknown backend '%BACKEND%' ^(expected 'ollama' or 'lmstudio'^)
+if /i "%BACKEND%"=="omlx" set "BACKEND=omlx"
+if not "%BACKEND%"=="ollama" if not "%BACKEND%"=="lmstudio" if not "%BACKEND%"=="omlx" (
+  echo claudelocal: ERROR: unknown backend '%BACKEND%' ^(expected 'ollama', 'lmstudio', or 'omlx'^)
   exit /b 1
 )
 if "%PORT%"=="" (
-  if /i "%BACKEND%"=="ollama" (set "PORT=11434") else (set "PORT=1234")
+  if "%BACKEND%"=="ollama" set "PORT=11434"
+  if "%BACKEND%"=="lmstudio" set "PORT=1234"
+  if "%BACKEND%"=="omlx" set "PORT=8000"
 )
 
 REM Build the base URL (HOST may be a bare host/IP or a full URL)
@@ -141,17 +149,31 @@ if "%AUTH_TOKEN%"=="" set "AUTH_TOKEN=%BACKEND%"
 REM ---------------------------------------------------------------------------
 REM Reachability check + model auto-detect
 REM ---------------------------------------------------------------------------
+REM The token is sent because oMLX (and LM Studio with "Require Authentication")
+REM reject unauthenticated /v1/models requests; servers without auth ignore it.
+set "HTTP_CODE="
 where curl >nul 2>&1
-if not errorlevel 1 (
-  curl -s -m 5 -o nul "%BASE_URL%/v1/models"
-  if errorlevel 1 (
-    echo claudelocal: WARNING: could not reach %BASE_URL%
-    echo   Is the %BACKEND% server running on %HOST%:%PORT%? Continuing anyway...
-  )
-)
+if errorlevel 1 goto probe_done
+for /f "usebackq delims=" %%C in (`curl -s -m 5 -o nul -w "%%{http_code}" -H "Authorization: Bearer %AUTH_TOKEN%" "%BASE_URL%/v1/models"`) do set "HTTP_CODE=%%C"
+if "%HTTP_CODE%"=="200" goto probe_done
+if "%HTTP_CODE%"=="401" goto probe_auth
+if "%HTTP_CODE%"=="403" goto probe_auth
+if "%HTTP_CODE%"=="000" goto probe_unreachable
+if "%HTTP_CODE%"=="" goto probe_unreachable
+echo claudelocal: WARNING: %BASE_URL%/v1/models returned HTTP %HTTP_CODE%. Continuing anyway...
+goto probe_done
+:probe_auth
+echo claudelocal: WARNING: %BASE_URL% rejected the auth token (HTTP %HTTP_CODE%)
+echo   Set AUTH_TOKEN in claudelocal.conf or pass -k/--token (the oMLX API key,
+echo   or the LM Studio token). Continuing anyway...
+goto probe_done
+:probe_unreachable
+echo claudelocal: WARNING: could not reach %BASE_URL%
+echo   Is the %BACKEND% server running on %HOST%:%PORT%? Continuing anyway...
+:probe_done
 
 if "%MODEL%"=="" (
-  for /f "usebackq delims=" %%M in (`powershell -NoProfile -Command "try { (Invoke-RestMethod -TimeoutSec 5 -Uri '%BASE_URL%/v1/models').data[0].id } catch { '' }"`) do set "MODEL=%%M"
+  for /f "usebackq delims=" %%M in (`powershell -NoProfile -Command "try { (Invoke-RestMethod -TimeoutSec 5 -Headers @{Authorization='Bearer %AUTH_TOKEN%'} -Uri '%BASE_URL%/v1/models').data[0].id } catch { '' }"`) do set "MODEL=%%M"
   if "!MODEL!"=="" (
     echo claudelocal: ERROR: no model configured and none could be auto-detected.
     echo   Set MODEL in claudelocal.conf or pass -m/--model.
@@ -184,9 +206,28 @@ REM Context / compaction tuned to the local model's window
 set "CLAUDE_CODE_MAX_CONTEXT_TOKENS=%CONTEXT_TOKENS%"
 set "CLAUDE_CODE_AUTO_COMPACT_WINDOW=%AUTO_COMPACT_TOKENS%"
 
-REM Keep the session local-first; tool search targets Anthropic's backend
+REM Keep the session local-first. Tool search needs an API that honors
+REM defer_loading and tool_reference blocks; Ollama, LM Studio, and oMLX don't.
 set "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"
 set "ENABLE_TOOL_SEARCH=false"
+
+REM Omit the attribution block (client version + prompt fingerprint) from the
+REM start of the system prompt so it can't disturb the server's prompt cache.
+REM Recommended by LM Studio and oMLX.
+set "CLAUDE_CODE_ATTRIBUTION_HEADER=0"
+
+REM oMLX: deny the LSP tool. Its schema is added to the tools array when a
+REM language server connects mid-session, which forces oMLX to re-prefill the
+REM whole conversation. Skipped if the user passes their own --disallowedTools.
+REM The =form keeps the variadic option from swallowing a following prompt.
+if not "%BACKEND%"=="omlx" goto lsp_done
+if not defined CLAUDE_ARGS goto lsp_add
+set "ARGS_CHECK=!CLAUDE_ARGS:--disallowedTools=!"
+set "ARGS_CHECK=!ARGS_CHECK:--disallowed-tools=!"
+if not "!ARGS_CHECK!"=="!CLAUDE_ARGS!" goto lsp_done
+:lsp_add
+set "CLAUDE_ARGS= "--disallowedTools=LSP"!CLAUDE_ARGS!"
+:lsp_done
 
 REM Per-request API timeout: only override Claude Code's own default
 REM (600000ms) when the user configured one.
@@ -201,22 +242,24 @@ call claude %CLAUDE_ARGS%
 exit /b %errorlevel%
 
 :usage
-echo claudelocal - run Claude Code against a local Ollama or LM Studio model.
+echo claudelocal - run Claude Code against a local Ollama, LM Studio, or oMLX model.
 echo.
 echo Usage: claudelocal [-c config] [options] [--] [claude args...]
 echo.
 echo Options:
 echo   -m, --model NAME      Model name (overrides config; default: first model
 echo                         the server reports, e.g. qwen2.5-coder:7b)
-echo   -b, --backend NAME    ollama ^| lmstudio   (default: ollama or config)
+echo   -b, --backend NAME    ollama ^| lmstudio ^| omlx   (default: ollama or config)
 echo   -H, --host HOST       Hostname or IP of the model server (default: localhost)
-echo   -p, --port PORT       Port (default: 11434 for Ollama, 1234 for LM Studio).
+echo   -p, --port PORT       Port (default: 11434 for Ollama, 1234 for LM Studio,
+echo                         8000 for oMLX).
 echo                         A non-numeric value after -p is passed to claude
 echo                         (claude's own -p/--print flag keeps working)
 echo   -x, --context N       Context window in tokens (default: 65536 or config);
 echo                         auto-compact window is calculated as 75%% of this
 echo   -k, --token TOKEN     Auth token if the server requires one (LM Studio
-echo                         "Require Authentication"); placeholder otherwise
+echo                         "Require Authentication", or the oMLX API key);
+echo                         placeholder otherwise
 echo   -t, --timeout MS      API request timeout in milliseconds (default:
 echo                         Claude Code's own default of 600000 / 10 min).
 echo                         Raise this if slow local inference causes "API

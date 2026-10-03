@@ -3,26 +3,31 @@
 # Format: KEY=VALUE, one per line. Lines starting with # are comments.
 # Any value set here can be overridden with a command-line flag.
 
-# Backend: ollama or lmstudio
+# Backend: ollama, lmstudio, or omlx
 BACKEND=ollama
 
 # Hostname or IP of the machine running the model server.
 # localhost, a LAN IP (192.168.1.50), or a full URL (http://192.168.1.50) all work.
 HOST=localhost
 
-# Port. Leave blank for the backend default: 11434 (Ollama), 1234 (LM Studio).
+# Port. Leave blank for the backend default: 11434 (Ollama), 1234 (LM Studio),
+# 8000 (oMLX).
 # Example for LM Studio: PORT=1234
 PORT=
 
 # Model name exactly as the server knows it (e.g. qwen2.5-coder:7b for Ollama,
-# or the identifier shown in LM Studio). Leave blank to auto-detect the first
-# model the server reports.
+# the identifier shown in LM Studio, or the model directory name / alias in
+# oMLX). Leave blank to auto-detect the first model the server reports.
 # Example for LM Studio: MODEL=qwen/qwen3.8-27b
+# oMLX lists every model in its model directory (favorites first), so set
+# MODEL explicitly there unless you only have one.
 MODEL=
 
 # Context window size (tokens) to tell Claude Code about. Set this to the
-# context length you configured the model with in Ollama / LM Studio.
-# LM Studio recommends >= 25k for coding agents.
+# context length you configured the model with in Ollama / LM Studio / oMLX.
+# LM Studio recommends >= 25k for coding agents. oMLX falls back to 32K unless
+# you set the model's max context window in its admin panel (/admin), and its
+# own Claude Code launcher requires at least 48K.
 # Example if you loaded the model with a 256K context: CONTEXT_TOKENS=262144
 CONTEXT_TOKENS=65536
 
@@ -35,11 +40,14 @@ AUTO_COMPACT_TOKENS=
 # Auth token. Ollama ignores it; a placeholder is used when blank.
 # LM Studio: only needed if you enabled "Require Authentication" on the
 # server — put your LM Studio API token here (or use -k/--token).
+# oMLX: put the server's API key here. It's required whenever oMLX serves on
+# the network, and on localhost too unless API key verification is skipped.
 AUTH_TOKEN=
 
 # API request timeout (milliseconds). Leave blank to use Claude Code's own
 # default (600000 = 10 minutes). Raise this if slow local inference causes
 # "API Error (Request timed out)" — e.g. large models on modest hardware, or
-# reasoning models with long hidden "thinking" passes.
+# reasoning models with long hidden "thinking" passes. oMLX's own Claude Code
+# launcher uses 3000000 (50 minutes).
 # Example: TIMEOUT_MS=1200000  (20 minutes)
 TIMEOUT_MS=

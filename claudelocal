@@ -35,6 +35,7 @@ CONTEXT_TOKENS="65536"    # context window to tell Claude Code about
 AUTO_COMPACT_TOKENS=""    # blank = auto-calculate as 75% of CONTEXT_TOKENS
 AUTH_TOKEN=""             # blank = placeholder ("ollama" / "lmstudio" / "omlx")
 TIMEOUT_MS=""             # blank = Claude Code's own default (600000ms / 10 min)
+ENV_MODE=0                # 1 = --env: print the resolved environment, don't launch claude
 
 CONFIG_FILE="$SCRIPT_DIR/claudelocal.conf"
 
@@ -63,6 +64,9 @@ Options:
                         slow local inference causes "API Error (Request timed
                         out)"
   -c, --config FILE     Use a different config file
+      --env             Print the resolved environment as KEY=VALUE lines and
+                        exit without launching claude (for scripts and other
+                        launchers; see README "Using claudelocal from scripts")
   -h, --help            Show this help
 
 Any other arguments are passed through to claude, e.g.:
@@ -135,6 +139,7 @@ while [ $# -gt 0 ]; do
     -t|--timeout)      TIMEOUT_MS="${2:?missing value for $1}"; shift 2 ;;
     --timeout=*)       TIMEOUT_MS="${1#*=}"; shift ;;
     -c|--config)       shift 2 ;;   # already handled in pre-pass
+    --env)             ENV_MODE=1; shift ;;
     --config=*)        shift ;;
     -h|--help)         usage; exit 0 ;;
     --)                shift; while [ $# -gt 0 ]; do CLAUDE_ARGS+=("$1"); shift; done ;;
@@ -173,23 +178,27 @@ esac
 # The token is sent because oMLX (and LM Studio with "Require Authentication")
 # reject unauthenticated /v1/models requests; servers without auth ignore it.
 MODELS_JSON=""
+PROBE="skipped"             # reported by --env: ok | auth | unreachable | http_<code> | skipped (no curl)
 if command -v curl >/dev/null 2>&1; then
   MODELS_RESP="$(curl -s -m 5 -w '\n%{http_code}' -H "Authorization: Bearer $AUTH_TOKEN" "$BASE_URL/v1/models" 2>/dev/null || true)"
   HTTP_CODE="${MODELS_RESP##*$'\n'}"
   MODELS_JSON="${MODELS_RESP%$'\n'*}"
   case "$HTTP_CODE" in
-    200) ;;
+    200) PROBE="ok" ;;
     401|403)
       MODELS_JSON=""
+      PROBE="auth"
       echo "claudelocal: WARNING: $BASE_URL rejected the auth token (HTTP $HTTP_CODE)" >&2
       echo "  Set AUTH_TOKEN in claudelocal.conf or pass -k/--token (the oMLX API key," >&2
       echo "  or the LM Studio token). Continuing anyway..." >&2 ;;
     000|"")
       MODELS_JSON=""
+      PROBE="unreachable"
       echo "claudelocal: WARNING: could not reach $BASE_URL" >&2
       echo "  Is the $BACKEND server running on $HOST:$PORT? Continuing anyway..." >&2 ;;
     *)
       MODELS_JSON=""
+      PROBE="http_$HTTP_CODE"
       echo "claudelocal: WARNING: $BASE_URL/v1/models returned HTTP $HTTP_CODE. Continuing anyway..." >&2 ;;
   esac
 fi
@@ -203,7 +212,12 @@ if [ -z "$MODEL" ]; then
     echo "  Set MODEL in claudelocal.conf or pass -m/--model." >&2
     exit 1
   fi
-  echo "claudelocal: auto-detected model '$MODEL'"
+  # stderr in --env mode so stdout carries nothing but KEY=VALUE lines
+  if [ "$ENV_MODE" = 1 ]; then
+    echo "claudelocal: auto-detected model '$MODEL'" >&2
+  else
+    echo "claudelocal: auto-detected model '$MODEL'"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -246,7 +260,8 @@ export CLAUDE_CODE_ATTRIBUTION_HEADER=0
 # language server connects mid-session, which forces oMLX to re-prefill the
 # whole conversation. Skipped if the user passes their own --disallowedTools.
 # The =form keeps the variadic option from swallowing a following prompt.
-if [ "$BACKEND" = "omlx" ]; then
+# (--env reports this as CLAUDELOCAL_DENY_TOOLS instead.)
+if [ "$BACKEND" = "omlx" ] && [ "$ENV_MODE" = 0 ]; then
   DENY_LSP=1
   for ARG in "${CLAUDE_ARGS[@]+"${CLAUDE_ARGS[@]}"}"; do
     case "$ARG" in --disallowedTools|--disallowedTools=*|--disallowed-tools|--disallowed-tools=*) DENY_LSP=0 ;; esac
@@ -260,6 +275,47 @@ fi
 # when the user configured one, since slow local inference is often fine at
 # the default and we shouldn't silently mask other problems.
 [ -n "$TIMEOUT_MS" ] && export API_TIMEOUT_MS="$TIMEOUT_MS"
+
+# ---------------------------------------------------------------------------
+# --env: print the environment instead of launching claude. A caller that
+# spawns claude itself (an agent supervisor, a CI job) merges these lines into
+# the child's environment. Contract (CLAUDELOCAL_ENV_VERSION=1): stdout holds
+# only KEY=VALUE lines; banners and warnings go to stderr; exit 0 = resolved.
+#   CLAUDELOCAL_UNSET      variables the caller must remove from the child env
+#   CLAUDELOCAL_DENY_TOOLS tools to add to the caller's --disallowedTools
+#   CLAUDELOCAL_PROBE      ok | auth | unreachable | http_<code> | skipped
+# ---------------------------------------------------------------------------
+if [ "$ENV_MODE" = 1 ]; then
+  if [ ${#CLAUDE_ARGS[@]} -gt 0 ]; then
+    echo "claudelocal: --env ignores claude arguments: ${CLAUDE_ARGS[*]}" >&2
+  fi
+  echo "claudelocal: backend=$BACKEND url=$BASE_URL model=$MODEL context=$CONTEXT_TOKENS compact=$AUTO_COMPACT_TOKENS${TIMEOUT_MS:+ timeout=$TIMEOUT_MS}" >&2
+  echo "CLAUDELOCAL_ENV_VERSION=1"
+  echo "CLAUDELOCAL_BACKEND=$BACKEND"
+  echo "CLAUDELOCAL_PROBE=$PROBE"
+  echo "ANTHROPIC_BASE_URL=$ANTHROPIC_BASE_URL"
+  echo "ANTHROPIC_AUTH_TOKEN=$ANTHROPIC_AUTH_TOKEN"
+  echo "ANTHROPIC_MODEL=$ANTHROPIC_MODEL"
+  echo "ANTHROPIC_DEFAULT_FABLE_MODEL=$ANTHROPIC_DEFAULT_FABLE_MODEL"
+  echo "ANTHROPIC_DEFAULT_OPUS_MODEL=$ANTHROPIC_DEFAULT_OPUS_MODEL"
+  echo "ANTHROPIC_DEFAULT_SONNET_MODEL=$ANTHROPIC_DEFAULT_SONNET_MODEL"
+  echo "ANTHROPIC_DEFAULT_HAIKU_MODEL=$ANTHROPIC_DEFAULT_HAIKU_MODEL"
+  echo "ANTHROPIC_SMALL_FAST_MODEL=$ANTHROPIC_SMALL_FAST_MODEL"
+  echo "CLAUDE_CODE_SUBAGENT_MODEL=$CLAUDE_CODE_SUBAGENT_MODEL"
+  echo "CLAUDE_CODE_MAX_CONTEXT_TOKENS=$CLAUDE_CODE_MAX_CONTEXT_TOKENS"
+  echo "CLAUDE_CODE_AUTO_COMPACT_WINDOW=$CLAUDE_CODE_AUTO_COMPACT_WINDOW"
+  echo "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=$CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"
+  echo "ENABLE_TOOL_SEARCH=$ENABLE_TOOL_SEARCH"
+  echo "CLAUDE_CODE_ATTRIBUTION_HEADER=$CLAUDE_CODE_ATTRIBUTION_HEADER"
+  if [ -n "$TIMEOUT_MS" ]; then echo "API_TIMEOUT_MS=$API_TIMEOUT_MS"; fi
+  echo "CLAUDELOCAL_UNSET=ANTHROPIC_API_KEY"
+  if [ "$BACKEND" = "omlx" ]; then
+    echo "CLAUDELOCAL_DENY_TOOLS=LSP"
+  else
+    echo "CLAUDELOCAL_DENY_TOOLS="
+  fi
+  exit 0
+fi
 
 echo "claudelocal: backend=$BACKEND url=$BASE_URL model=$MODEL context=$CONTEXT_TOKENS compact=$AUTO_COMPACT_TOKENS${TIMEOUT_MS:+ timeout=$TIMEOUT_MS}"
 exec claude "${CLAUDE_ARGS[@]+"${CLAUDE_ARGS[@]}"}"

@@ -95,6 +95,8 @@ claudelocal [options] [--] [claude args...]
   -k, --token TOKEN     Auth token (LM Studio "Require Authentication", or the oMLX API key)
   -t, --timeout MS      API request timeout in milliseconds (default: 600000)
   -c, --config FILE     Alternate config file
+      --env             Print the resolved environment as KEY=VALUE lines and exit
+                        (don't launch claude) — see "Using claudelocal from scripts"
   -h, --help            Show help
 ```
 
@@ -227,7 +229,73 @@ curl -H "Authorization: Bearer <api-key>" http://localhost:8000/v1/models   # oM
 | `CLAUDE_CODE_ATTRIBUTION_HEADER` | `0` | Omits Claude Code's attribution block (client version and prompt fingerprint) from the start of the system prompt so it can't disturb the server's prompt cache. Recommended by LM Studio and oMLX |
 | `API_TIMEOUT_MS` | `TIMEOUT_MS` (only set if configured) | Per-request timeout; raise it if slow local inference triggers "API Error (Request timed out)" |
 
-For the `omlx` backend only, the scripts also pass `--disallowedTools=LSP` to `claude`. Claude Code adds the LSP tool's schema to the tools array when a language server connects mid-session, and because tool schemas sit at the front of the prompt, that one change forces oMLX to re-process the whole conversation instead of reusing its cache. oMLX's own launcher does the same. If you pass your own `--disallowedTools`, the scripts leave it alone, so include `LSP` in your list if you still want it denied.
+`claudelocal --env` prints these same variables instead of setting them; see *Using claudelocal from scripts*.
+
+For the `omlx` backend only, the scripts also pass `--disallowedTools=LSP` to `claude`. With `--env` they report it as `CLAUDELOCAL_DENY_TOOLS=LSP` instead. Claude Code adds the LSP tool's schema to the tools array when a language server connects mid-session, and because tool schemas sit at the front of the prompt, that one change forces oMLX to re-process the whole conversation instead of reusing its cache. oMLX's own launcher does the same. If you pass your own `--disallowedTools`, the scripts leave it alone, so include `LSP` in your list if you still want it denied.
+
+## Using claudelocal from scripts (`--env`)
+
+Some programs launch `claude` themselves, such as an agent supervisor, a CI job, or a task runner. They manage their own arguments, stdin, timeouts and output parsing, so putting `claudelocal` in front of `claude` gets in their way:
+
+- `-m`, `-p` and `-c` are claudelocal flags.
+- The launch banner lands on stdout.
+- On Windows, the extra `cmd.exe` layer splits comma-separated arguments.
+
+For those callers, `--env` resolves everything exactly as a normal launch would. That includes reading the config, applying flags, probing the server, and auto-detecting the model. It then **prints the environment instead of launching `claude`**:
+
+```sh
+claudelocal --env                      # config-file defaults
+claudelocal --env -m Qwen3-Coder-30B   # any normal flag still applies
+claudelocal -c agent.conf --env        # Windows: -c must still come first
+```
+
+```
+CLAUDELOCAL_ENV_VERSION=1
+CLAUDELOCAL_BACKEND=omlx
+CLAUDELOCAL_PROBE=ok
+ANTHROPIC_BASE_URL=http://192.168.1.60:8000
+ANTHROPIC_AUTH_TOKEN=<token>
+ANTHROPIC_MODEL=Qwen3-Coder-30B
+ANTHROPIC_DEFAULT_FABLE_MODEL=Qwen3-Coder-30B
+...                                    (every variable listed in "What the scripts configure")
+CLAUDELOCAL_UNSET=ANTHROPIC_API_KEY
+CLAUDELOCAL_DENY_TOOLS=LSP
+```
+
+**Contract** (version 1):
+
+| Line | Meaning |
+|---|---|
+| `CLAUDELOCAL_ENV_VERSION` | Format version. Check it and refuse versions you don't know. |
+| `CLAUDELOCAL_BACKEND` | `ollama`, `lmstudio`, or `omlx` |
+| `CLAUDELOCAL_PROBE` | Result of the `/v1/models` check: `ok`, `auth` (token rejected), `unreachable`, `http_<code>`, or `skipped` (no curl) |
+| `CLAUDELOCAL_UNSET` | Comma-separated variables to **remove** from the child's environment |
+| `CLAUDELOCAL_DENY_TOOLS` | Comma-separated tools to add to your own `--disallowedTools` (oMLX: `LSP`, see below). It may be empty. |
+| every other line | Set `KEY` to `VALUE` in the child's environment. The value is everything after the first `=`. |
+
+- **stdout carries only `KEY=VALUE` lines.** The banner, warnings and errors go to stderr.
+- **Exit codes:** `0` means resolved. `1` means it could not resolve: unknown backend, or no model configured and none detected. An unreachable server is **not** an error, because you may want to start it later. Check `CLAUDELOCAL_PROBE` if you need it up now.
+- Any `claude` arguments passed with `--env` are ignored, with a warning on stderr.
+- The output contains your auth token. Don't log it.
+
+Minimal Node.js caller:
+
+```js
+import { execFileSync, spawn } from 'node:child_process';
+
+const lines = execFileSync('claudelocal', ['--env'], { encoding: 'utf8' }).trim().split(/\r?\n/);
+const vars = Object.fromEntries(lines.map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]));
+if (vars.CLAUDELOCAL_ENV_VERSION !== '1') throw new Error('unsupported claudelocal --env version');
+
+const env = { ...process.env };
+for (const [k, v] of Object.entries(vars)) if (!k.startsWith('CLAUDELOCAL_')) env[k] = v;
+for (const k of vars.CLAUDELOCAL_UNSET.split(',').filter(Boolean)) delete env[k];
+const deny = vars.CLAUDELOCAL_DENY_TOOLS ? [`--disallowedTools=${vars.CLAUDELOCAL_DENY_TOOLS}`] : [];
+
+spawn('claude', [...deny, '-p', 'hello'], { env, stdio: 'inherit' });
+```
+
+On Windows, run `claudelocal.cmd` through a shell (`exec`, or `spawn` with `shell: true`). Node refuses to start `.cmd` files without one.
 
 ## Tuning the context window
 

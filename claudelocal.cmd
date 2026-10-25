@@ -23,6 +23,8 @@ set "CONTEXT_TOKENS=65536"
 set "AUTO_COMPACT_TOKENS="
 set "AUTH_TOKEN="
 set "TIMEOUT_MS="
+set "ENV_MODE=0"
+set "PROBE=skipped"
 set "CONFIG_FILE=%~dp0claudelocal.conf"
 set "CLAUDE_ARGS="
 
@@ -86,6 +88,7 @@ if /i "%~1"=="-k" (set "AUTH_TOKEN=%~2" & shift & shift & goto parse)
 if /i "%~1"=="--token" (set "AUTH_TOKEN=%~2" & shift & shift & goto parse)
 if /i "%~1"=="-t" (set "TIMEOUT_MS=%~2" & shift & shift & goto parse)
 if /i "%~1"=="--timeout" (set "TIMEOUT_MS=%~2" & shift & shift & goto parse)
+if /i "%~1"=="--env" (set "ENV_MODE=1" & shift & goto parse)
 if /i "%~1"=="-h" goto usage
 if /i "%~1"=="--help" goto usage
 
@@ -124,10 +127,9 @@ if /i "%BACKEND%"=="lmstudio" set "BACKEND=lmstudio"
 if /i "%BACKEND%"=="lms" set "BACKEND=lmstudio"
 if /i "%BACKEND%"=="lm-studio" set "BACKEND=lmstudio"
 if /i "%BACKEND%"=="omlx" set "BACKEND=omlx"
-if not "%BACKEND%"=="ollama" if not "%BACKEND%"=="lmstudio" if not "%BACKEND%"=="omlx" (
-  echo claudelocal: ERROR: unknown backend '%BACKEND%' ^(expected 'ollama', 'lmstudio', or 'omlx'^)
-  exit /b 1
-)
+REM Errors leave through a top-level label: an `exit /b 1` inside a ( ) block
+REM in this script came back as exit code 0 when run via cmd /c (Node exec).
+if not "%BACKEND%"=="ollama" if not "%BACKEND%"=="lmstudio" if not "%BACKEND%"=="omlx" goto bad_backend
 if "%PORT%"=="" (
   if "%BACKEND%"=="ollama" set "PORT=11434"
   if "%BACKEND%"=="lmstudio" set "PORT=1234"
@@ -155,31 +157,35 @@ set "HTTP_CODE="
 where curl >nul 2>&1
 if errorlevel 1 goto probe_done
 for /f "usebackq delims=" %%C in (`curl -s -m 5 -o nul -w "%%{http_code}" -H "Authorization: Bearer %AUTH_TOKEN%" "%BASE_URL%/v1/models"`) do set "HTTP_CODE=%%C"
-if "%HTTP_CODE%"=="200" goto probe_done
+if "%HTTP_CODE%"=="200" (set "PROBE=ok" & goto probe_done)
 if "%HTTP_CODE%"=="401" goto probe_auth
 if "%HTTP_CODE%"=="403" goto probe_auth
 if "%HTTP_CODE%"=="000" goto probe_unreachable
 if "%HTTP_CODE%"=="" goto probe_unreachable
-echo claudelocal: WARNING: %BASE_URL%/v1/models returned HTTP %HTTP_CODE%. Continuing anyway...
+set "PROBE=http_%HTTP_CODE%"
+>&2 echo claudelocal: WARNING: %BASE_URL%/v1/models returned HTTP %HTTP_CODE%. Continuing anyway...
 goto probe_done
 :probe_auth
-echo claudelocal: WARNING: %BASE_URL% rejected the auth token (HTTP %HTTP_CODE%)
-echo   Set AUTH_TOKEN in claudelocal.conf or pass -k/--token (the oMLX API key,
-echo   or the LM Studio token). Continuing anyway...
+set "PROBE=auth"
+>&2 echo claudelocal: WARNING: %BASE_URL% rejected the auth token (HTTP %HTTP_CODE%)
+>&2 echo   Set AUTH_TOKEN in claudelocal.conf or pass -k/--token (the oMLX API key,
+>&2 echo   or the LM Studio token). Continuing anyway...
 goto probe_done
 :probe_unreachable
-echo claudelocal: WARNING: could not reach %BASE_URL%
-echo   Is the %BACKEND% server running on %HOST%:%PORT%? Continuing anyway...
+set "PROBE=unreachable"
+>&2 echo claudelocal: WARNING: could not reach %BASE_URL%
+>&2 echo   Is the %BACKEND% server running on %HOST%:%PORT%? Continuing anyway...
 :probe_done
 
 if "%MODEL%"=="" (
   for /f "usebackq delims=" %%M in (`powershell -NoProfile -Command "try { (Invoke-RestMethod -TimeoutSec 5 -Headers @{Authorization='Bearer %AUTH_TOKEN%'} -Uri '%BASE_URL%/v1/models').data[0].id } catch { '' }"`) do set "MODEL=%%M"
-  if "!MODEL!"=="" (
-    echo claudelocal: ERROR: no model configured and none could be auto-detected.
-    echo   Set MODEL in claudelocal.conf or pass -m/--model.
-    exit /b 1
+  if "!MODEL!"=="" goto no_model
+  REM stderr in --env mode so stdout carries nothing but KEY=VALUE lines
+  if "%ENV_MODE%"=="1" (
+    >&2 echo claudelocal: auto-detected model '!MODEL!'
+  ) else (
+    echo claudelocal: auto-detected model '!MODEL!'
   )
-  echo claudelocal: auto-detected model '!MODEL!'
 )
 
 REM ---------------------------------------------------------------------------
@@ -216,6 +222,49 @@ REM start of the system prompt so it can't disturb the server's prompt cache.
 REM Recommended by LM Studio and oMLX.
 set "CLAUDE_CODE_ATTRIBUTION_HEADER=0"
 
+REM Per-request API timeout: only override Claude Code's own default
+REM (600000ms) when the user configured one.
+set "TIMEOUT_MSG="
+if not "%TIMEOUT_MS%"=="" (
+  set "API_TIMEOUT_MS=%TIMEOUT_MS%"
+  set "TIMEOUT_MSG= timeout=%TIMEOUT_MS%"
+)
+
+REM ---------------------------------------------------------------------------
+REM --env: print the environment instead of launching claude. A caller that
+REM spawns claude itself (an agent supervisor, a CI job) merges these lines into
+REM the child's environment. Contract (CLAUDELOCAL_ENV_VERSION=1): stdout holds
+REM only KEY=VALUE lines; banners and warnings go to stderr; exit 0 = resolved.
+REM   CLAUDELOCAL_UNSET      variables the caller must remove from the child env
+REM   CLAUDELOCAL_DENY_TOOLS tools to add to the caller's --disallowedTools
+REM   CLAUDELOCAL_PROBE      ok, auth, unreachable, http_CODE, or skipped
+REM ---------------------------------------------------------------------------
+if not "%ENV_MODE%"=="1" goto env_done
+if defined CLAUDE_ARGS >&2 echo claudelocal: --env ignores claude arguments:!CLAUDE_ARGS!
+>&2 echo claudelocal: backend=%BACKEND% url=%BASE_URL% model=!MODEL! context=%CONTEXT_TOKENS% compact=%AUTO_COMPACT_TOKENS%%TIMEOUT_MSG%
+echo CLAUDELOCAL_ENV_VERSION=1
+echo CLAUDELOCAL_BACKEND=%BACKEND%
+echo CLAUDELOCAL_PROBE=%PROBE%
+echo ANTHROPIC_BASE_URL=!ANTHROPIC_BASE_URL!
+echo ANTHROPIC_AUTH_TOKEN=!ANTHROPIC_AUTH_TOKEN!
+echo ANTHROPIC_MODEL=!ANTHROPIC_MODEL!
+echo ANTHROPIC_DEFAULT_FABLE_MODEL=!ANTHROPIC_DEFAULT_FABLE_MODEL!
+echo ANTHROPIC_DEFAULT_OPUS_MODEL=!ANTHROPIC_DEFAULT_OPUS_MODEL!
+echo ANTHROPIC_DEFAULT_SONNET_MODEL=!ANTHROPIC_DEFAULT_SONNET_MODEL!
+echo ANTHROPIC_DEFAULT_HAIKU_MODEL=!ANTHROPIC_DEFAULT_HAIKU_MODEL!
+echo ANTHROPIC_SMALL_FAST_MODEL=!ANTHROPIC_SMALL_FAST_MODEL!
+echo CLAUDE_CODE_SUBAGENT_MODEL=!CLAUDE_CODE_SUBAGENT_MODEL!
+echo CLAUDE_CODE_MAX_CONTEXT_TOKENS=!CLAUDE_CODE_MAX_CONTEXT_TOKENS!
+echo CLAUDE_CODE_AUTO_COMPACT_WINDOW=!CLAUDE_CODE_AUTO_COMPACT_WINDOW!
+echo CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=!CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC!
+echo ENABLE_TOOL_SEARCH=!ENABLE_TOOL_SEARCH!
+echo CLAUDE_CODE_ATTRIBUTION_HEADER=!CLAUDE_CODE_ATTRIBUTION_HEADER!
+if defined API_TIMEOUT_MS echo API_TIMEOUT_MS=!API_TIMEOUT_MS!
+echo CLAUDELOCAL_UNSET=ANTHROPIC_API_KEY
+if "%BACKEND%"=="omlx" (echo CLAUDELOCAL_DENY_TOOLS=LSP) else (echo CLAUDELOCAL_DENY_TOOLS=)
+exit /b 0
+:env_done
+
 REM oMLX: deny the LSP tool. Its schema is added to the tools array when a
 REM language server connects mid-session, which forces oMLX to re-prefill the
 REM whole conversation. Skipped if the user passes their own --disallowedTools.
@@ -229,17 +278,18 @@ if not "!ARGS_CHECK!"=="!CLAUDE_ARGS!" goto lsp_done
 set "CLAUDE_ARGS= "--disallowedTools=LSP"!CLAUDE_ARGS!"
 :lsp_done
 
-REM Per-request API timeout: only override Claude Code's own default
-REM (600000ms) when the user configured one.
-set "TIMEOUT_MSG="
-if not "%TIMEOUT_MS%"=="" (
-  set "API_TIMEOUT_MS=%TIMEOUT_MS%"
-  set "TIMEOUT_MSG= timeout=%TIMEOUT_MS%"
-)
-
 echo claudelocal: backend=%BACKEND% url=%BASE_URL% model=%MODEL% context=%CONTEXT_TOKENS% compact=%AUTO_COMPACT_TOKENS%%TIMEOUT_MSG%
 call claude %CLAUDE_ARGS%
 exit /b %errorlevel%
+
+:bad_backend
+>&2 echo claudelocal: ERROR: unknown backend '%BACKEND%' ^(expected 'ollama', 'lmstudio', or 'omlx'^)
+exit /b 1
+
+:no_model
+>&2 echo claudelocal: ERROR: no model configured and none could be auto-detected.
+>&2 echo   Set MODEL in claudelocal.conf or pass -m/--model.
+exit /b 1
 
 :usage
 echo claudelocal - run Claude Code against a local Ollama, LM Studio, or oMLX model.
@@ -265,6 +315,9 @@ echo                         Claude Code's own default of 600000 / 10 min).
 echo                         Raise this if slow local inference causes "API
 echo                         Error (Request timed out)"
 echo   -c, --config FILE     Use a different config file (must be first option)
+echo       --env             Print the resolved environment as KEY=VALUE lines and
+echo                         exit without launching claude (for scripts and other
+echo                         launchers; see README "Using claudelocal from scripts")
 echo   -h, --help            Show this help
 echo.
 echo Any other arguments are passed through to claude, e.g.:

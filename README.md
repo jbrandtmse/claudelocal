@@ -1,14 +1,15 @@
 # claudelocal
 
-Launcher scripts that run [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (Anthropic's CLI coding agent) against a **local model hosted on Ollama, LM Studio, or oMLX** — on `localhost` or any reachable machine on your network.
+Launcher scripts that run [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (Anthropic's CLI coding agent) against a **local model hosted on Ollama, LM Studio, oMLX, or Strata** — on `localhost` or any reachable machine on your network.
 
-Ollama, LM Studio, and oMLX all expose an Anthropic-compatible Messages API, so Claude Code can talk to them directly. These scripts set all the required environment variables for you and then launch `claude`, forwarding any extra arguments. Your normal Anthropic-backed `claude` setup is untouched — the variables only apply to the launched session.
+Ollama, LM Studio, oMLX, and Strata all expose an Anthropic-compatible Messages API, so Claude Code can talk to them directly. These scripts set all the required environment variables for you and then launch `claude`, forwarding any extra arguments. Your normal Anthropic-backed `claude` setup is untouched — the variables only apply to the launched session.
 
 Based on the official integration guides:
 
 - Ollama: <https://docs.ollama.com/integrations/claude-code>
 - LM Studio: <https://lmstudio.ai/docs/integrations/claude-code>
 - oMLX: <https://github.com/jundot/omlx> (its built-in `omlx launch claude` integration)
+- Strata: <https://github.com/Niko1221/Strata> (its `strata connect claude-code` settings)
 
 ## Files
 
@@ -54,6 +55,17 @@ Based on the official integration guides:
 
      Models are MLX-format subdirectories of the model directory (`~/.omlx/models` by default); you can also download them from the admin panel at `http://localhost:8000/admin`.
 
+   - **Strata** — <https://github.com/Niko1221/Strata>. An inference engine that runs Qwen3.8-Flash-Next on one NVIDIA or AMD graphics card plus system RAM, or on an Apple Silicon Mac. Install it, then let `strata launch` download the engine and model and start the server (port `8080` by default):
+
+     ```sh
+     # Linux, macOS
+     curl -fsSL https://github.com/Niko1221/Strata/releases/latest/download/install.sh -o install.sh && sh install.sh
+     # Windows (PowerShell)
+     irm https://github.com/Niko1221/Strata/releases/latest/download/install.ps1 | iex
+
+     strata launch
+     ```
+
 ## Configuration
 
 Settings come from three sources, in order of precedence:
@@ -70,17 +82,17 @@ cp claudelocal.conf.example claudelocal.conf
 
 ```ini
 # claudelocal.conf
-BACKEND=ollama           # ollama | lmstudio | omlx
+BACKEND=ollama           # ollama | lmstudio | omlx | strata
 HOST=localhost           # hostname or IP of the model server
-PORT=                    # blank = 11434 (Ollama) / 1234 (LM Studio) / 8000 (oMLX)
+PORT=                    # blank = 11434 (Ollama) / 1234 (LM Studio) / 8000 (oMLX) / 8080 (Strata)
 MODEL=                   # blank = auto-detect from the server
 CONTEXT_TOKENS=65536     # context window Claude Code should assume
 AUTO_COMPACT_TOKENS=     # blank = auto-calculated (75% of CONTEXT_TOKENS)
-AUTH_TOKEN=              # LM Studio "Require Authentication" token, or the oMLX API key
+AUTH_TOKEN=              # LM Studio "Require Authentication" token, or the oMLX or Strata API key
 TIMEOUT_MS=              # blank = Claude Code's own default (600000 / 10 min)
 ```
 
-> **If you put a real LM Studio token or oMLX API key in `claudelocal.conf`, don't commit it to source control.** The provided `.gitignore` already excludes it.
+> **If you put a real LM Studio token or an oMLX or Strata API key in `claudelocal.conf`, don't commit it to source control.** The provided `.gitignore` already excludes it.
 
 ### Command-line flags
 
@@ -88,11 +100,11 @@ TIMEOUT_MS=              # blank = Claude Code's own default (600000 / 10 min)
 claudelocal [options] [--] [claude args...]
 
   -m, --model NAME      Model name (default: auto-detect the server's first model)
-  -b, --backend NAME    ollama | lmstudio | omlx
+  -b, --backend NAME    ollama | lmstudio | omlx | strata
   -H, --host HOST       Hostname or IP (may include http://)
   -p, --port PORT       Server port
   -x, --context N       Context window in tokens (auto-compact = 75% of this)
-  -k, --token TOKEN     Auth token (LM Studio "Require Authentication", or the oMLX API key)
+  -k, --token TOKEN     Auth token (LM Studio "Require Authentication", or the oMLX or Strata API key)
   -t, --timeout MS      API request timeout in milliseconds (default: 600000)
   -c, --config FILE     Alternate config file
       --env             Print the resolved environment as KEY=VALUE lines and exit
@@ -109,6 +121,7 @@ claudelocal -m qwen2.5-coder:14b               # one-off model override
 claudelocal -H 192.168.1.50                    # server on another machine
 claudelocal -b lmstudio -H 192.168.1.50 -p 1234 -m "qwen3-coder-30b"
 claudelocal -b omlx -H 192.168.1.60 -k "$OMLX_KEY" -m "Qwen3-Coder-30B-A3B-Instruct-4bit"
+claudelocal -b strata -H 192.168.1.70 -x 262144  # Strata on another machine
 claudelocal -x 262144                          # 256K context (compact at 196608)
 claudelocal -t 1200000                         # raise API timeout to 20 minutes
 claudelocal -- --verbose                       # pass --verbose to claude
@@ -118,7 +131,7 @@ claudelocal -- --verbose                       # pass --verbose to claude
 
 ### Model auto-detection
 
-If `MODEL` is unset (config and flag), the script queries `http://<host>:<port>/v1/models` (sending `AUTH_TOKEN` as a bearer token) and uses the **first model the server reports**. For LM Studio that's the currently loaded model; for Ollama it's the first entry in `ollama list`; for oMLX it's the first model in its model directory, with favorites listed first, whether or not it's loaded. Set `MODEL` explicitly if you run multiple models.
+If `MODEL` is unset (config and flag), the script queries `http://<host>:<port>/v1/models` (sending `AUTH_TOKEN` as a bearer token) and uses the **first model the server reports**. For LM Studio that's the currently loaded model; for Ollama it's the first entry in `ollama list`; for oMLX it's the first model in its model directory, with favorites listed first, whether or not it's loaded; for Strata it's the one model the server has loaded. Set `MODEL` explicitly if you run multiple models.
 
 ## Setup — Windows
 
@@ -187,13 +200,15 @@ Point `HOST` at the remote machine and make sure the server listens on the netwo
 
   then pass the same key to `claudelocal` with `-k` or `AUTH_TOKEN`.
 
+- **Strata** binds to localhost by default. To expose it on the LAN, start it with `strata launch --access lan`, or set `"host": "0.0.0.0"` in its config. An API key is recommended but not required. If you set one, pass it to `claudelocal` with `-k` or `AUTH_TOKEN`.
+
 Then:
 
 ```powershell
 claudelocal -H 192.168.1.50
 ```
 
-> Exposing a model server on your network gives anyone who can reach it access to the model. Keep it to trusted networks, or use LM Studio's "Require Authentication" (or oMLX's API key) with `-k`.
+> Exposing a model server on your network gives anyone who can reach it access to the model. Keep it to trusted networks, or use LM Studio's "Require Authentication" (or an oMLX or Strata API key) with `-k`.
 
 ## Verifying it works
 
@@ -211,6 +226,7 @@ You can also sanity-check the server directly:
 curl http://localhost:11434/v1/models    # Ollama
 curl http://localhost:1234/v1/models     # LM Studio
 curl -H "Authorization: Bearer <api-key>" http://localhost:8000/v1/models   # oMLX
+curl http://localhost:8080/v1/models     # Strata
 ```
 
 ## What the scripts configure
@@ -218,16 +234,17 @@ curl -H "Authorization: Bearer <api-key>" http://localhost:8000/v1/models   # oM
 | Variable | Value | Why |
 |---|---|---|
 | `ANTHROPIC_BASE_URL` | `http://<host>:<port>` | The server's Anthropic-compatible endpoint (no `/v1` suffix — Claude Code appends paths itself) |
-| `ANTHROPIC_AUTH_TOKEN` | placeholder (`ollama`/`lmstudio`/`omlx`) or `-k` value | Claude Code requires a non-empty token; local servers don't validate it unless LM Studio auth is enabled or oMLX has an API key |
+| `ANTHROPIC_AUTH_TOKEN` | placeholder (`ollama`/`lmstudio`/`omlx`/`strata`) or `-k` value | Claude Code requires a non-empty token; local servers don't validate it unless LM Studio auth is enabled or oMLX or Strata has an API key |
 | `ANTHROPIC_API_KEY` | unset | Prevents a stray cloud key from taking precedence |
 | `ANTHROPIC_MODEL` | configured/auto-detected model | The model every request uses |
 | `ANTHROPIC_DEFAULT_FABLE_MODEL`, `ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`, `ANTHROPIC_DEFAULT_HAIKU_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`, `CLAUDE_CODE_SUBAGENT_MODEL` | same model | Every model tier and subagent stays on the local model |
 | `CLAUDE_CODE_MAX_CONTEXT_TOKENS` | `CONTEXT_TOKENS` (default 65536) | Tell Claude Code the backend's context size |
 | `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | `AUTO_COMPACT_TOKENS` (default: 75% of `CONTEXT_TOKENS`) | Auto-compaction calibrated to leave ~25% headroom below the real window |
 | `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` | `1` | Keeps the session local-first; no calls to Anthropic services |
-| `ENABLE_TOOL_SEARCH` | `false` | Tool search needs an API that honors `defer_loading` and `tool_reference` blocks. Ollama, LM Studio, and oMLX ignore them, so it would only add a `ToolSearch` tool that always comes back empty, without saving any context |
+| `ENABLE_TOOL_SEARCH` | `false` (`true` for Strata) | Tool search needs an API that honors `defer_loading` and `tool_reference` blocks. Ollama, LM Studio, and oMLX ignore them, so it would only add a `ToolSearch` tool that always comes back empty, without saving any context. Strata supports them, so MCP tool schemas stay out of the prompt until they're needed |
 | `CLAUDE_CODE_ATTRIBUTION_HEADER` | `0` | Omits Claude Code's attribution block (client version and prompt fingerprint) from the start of the system prompt so it can't disturb the server's prompt cache. Recommended by LM Studio and oMLX |
 | `API_TIMEOUT_MS` | `TIMEOUT_MS` (only set if configured) | Per-request timeout; raise it if slow local inference triggers "API Error (Request timed out)" |
+| `CLAUDE_CODE_MAX_OUTPUT_TOKENS` | Strata only: `CONTEXT_TOKENS` ÷ 8, at least 4096 | Matches Strata's own Claude Code settings. Thinking counts against this cap, and too low a value cuts off compaction summaries and large file writes. A value already in your environment is kept |
 
 `claudelocal --env` prints these same variables instead of setting them; see *Using claudelocal from scripts*.
 
@@ -267,7 +284,7 @@ CLAUDELOCAL_DENY_TOOLS=LSP
 | Line | Meaning |
 |---|---|
 | `CLAUDELOCAL_ENV_VERSION` | Format version. Check it and refuse versions you don't know. |
-| `CLAUDELOCAL_BACKEND` | `ollama`, `lmstudio`, or `omlx` |
+| `CLAUDELOCAL_BACKEND` | `ollama`, `lmstudio`, `omlx`, or `strata` |
 | `CLAUDELOCAL_PROBE` | Result of the `/v1/models` check: `ok`, `auth` (token rejected), `unreachable`, `http_<code>`, or `skipped` (no curl) |
 | `CLAUDELOCAL_UNSET` | Comma-separated variables to **remove** from the child's environment |
 | `CLAUDELOCAL_DENY_TOOLS` | Comma-separated tools to add to your own `--disallowedTools` (oMLX: `LSP`, see below). It may be empty. |
@@ -304,6 +321,7 @@ On Windows, run `claudelocal.cmd` through a shell (`exec`, or `spawn` with `shel
 - **Ollama**: default context is often small (4K). Set `num_ctx` in the model's Modelfile, or run `ollama run <model> --ctx-size 65536` / set `OLLAMA_CONTEXT_LENGTH` on newer versions.
 - **LM Studio**: set the context length when loading the model (Server tab → model load options). LM Studio recommends at least ~25K for coding agents.
 - **oMLX**: set the model's max context window in its per-model settings in the admin panel (`/admin`). Without one, oMLX falls back to 32K, and its own Claude Code launcher refuses models below 48K. `curl /v1/models` shows the effective value for each model as `max_model_len`.
+- **Strata**: the server sets the context window when it loads the model. `curl /health` shows the value as `max_context`.
 
 Then set the same number in `claudelocal.conf`, e.g. `CONTEXT_TOKENS=32768`.
 
@@ -338,6 +356,7 @@ oMLX sends keep-alive events while it processes a long prompt, and its own Claud
 - **`claudelocal: command not found`** — the script's folder isn't on your `PATH`, or you haven't opened a new terminal since adding it.
 - **401 / Unauthorized from LM Studio** — "Require Authentication" is on; pass your LM Studio API token with `-k` or set `AUTH_TOKEN` in the config.
 - **`WARNING: ... rejected the auth token (HTTP 401)` with oMLX** — oMLX has an API key configured (always the case when it serves on the network). Pass it with `-k` or set `AUTH_TOKEN`.
+- **`WARNING: ... rejected the auth token (HTTP 401)` with Strata** — the server has an `api_key` configured. Pass it with `-k` or set `AUTH_TOKEN`.
 - **Model not found errors** — the model name must match exactly what the server reports (`ollama list`, or the identifier in LM Studio), including tags like `:7b`.
 - **Answers degrade or get cut off on long sessions** — your `CONTEXT_TOKENS` is larger than the model's actual context (see *Tuning the context window*), or the model is simply too small for agentic coding. Prefer coding-tuned models (e.g. Qwen coder variants) with the largest context your hardware allows.
 - **Claude Code asks to save an API key** — answer **No**; the placeholder token is only for the local session.

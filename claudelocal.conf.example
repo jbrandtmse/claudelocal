@@ -3,7 +3,7 @@
 # Format: KEY=VALUE, one per line. Lines starting with # are comments.
 # Any value set here can be overridden with a command-line flag.
 
-# Backend: ollama, lmstudio, or omlx
+# Backend: ollama, lmstudio, omlx, or strata
 BACKEND=ollama
 
 # Hostname or IP of the machine running the model server.
@@ -11,7 +11,7 @@ BACKEND=ollama
 HOST=localhost
 
 # Port. Leave blank for the backend default: 11434 (Ollama), 1234 (LM Studio),
-# 8000 (oMLX).
+# 8000 (oMLX), 8080 (Strata).
 # Example for LM Studio: PORT=1234
 PORT=
 
@@ -20,11 +20,13 @@ PORT=
 # oMLX). Leave blank to auto-detect the first model the server reports.
 # Example for LM Studio: MODEL=qwen/qwen3.8-27b
 # oMLX lists every model in its model directory (favorites first), so set
-# MODEL explicitly there unless you only have one.
+# MODEL explicitly there unless you only have one. Strata serves one model and
+# ignores the name, so auto-detect is fine there.
 MODEL=
 
 # Context window size (tokens) to tell Claude Code about. Set this to the
-# context length you configured the model with in Ollama / LM Studio / oMLX.
+# context length you configured the model with in Ollama / LM Studio / oMLX /
+# Strata. Strata reports its window as max_context at /health.
 # LM Studio recommends >= 25k for coding agents. oMLX falls back to 32K unless
 # you set the model's max context window in its admin panel (/admin), and its
 # own Claude Code launcher requires at least 48K.
@@ -42,6 +44,7 @@ AUTO_COMPACT_TOKENS=
 # server — put your LM Studio API token here (or use -k/--token).
 # oMLX: put the server's API key here. It's required whenever oMLX serves on
 # the network, and on localhost too unless API key verification is skipped.
+# Strata: put the server's api_key here if it has one; otherwise leave blank.
 AUTH_TOKEN=
 
 # API request timeout (milliseconds). Leave blank to use Claude Code's own

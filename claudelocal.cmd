@@ -1,16 +1,18 @@
 @echo off
 setlocal enabledelayedexpansion
 REM claudelocal - run Claude Code CLI against a local model hosted on Ollama,
-REM LM Studio, or oMLX. Works with localhost or any reachable host/IP on your network.
+REM LM Studio, oMLX, or Strata. Works with localhost or any reachable host/IP on your network.
 REM
 REM   Ollama:    Anthropic-compatible endpoint at http://<host>:11434
 REM   LM Studio: Anthropic-compatible endpoint at http://<host>:1234
 REM   oMLX:      Anthropic-compatible endpoint at http://<host>:8000
+REM   Strata:    Anthropic-compatible endpoint at http://<host>:8080
 REM
 REM Docs:
 REM   https://docs.ollama.com/integrations/claude-code
 REM   https://lmstudio.ai/docs/integrations/claude-code
 REM   https://github.com/jundot/omlx
+REM   https://github.com/Niko1221/Strata
 
 REM ---------------------------------------------------------------------------
 REM Defaults (overridden by config file, then by command-line flags)
@@ -127,13 +129,15 @@ if /i "%BACKEND%"=="lmstudio" set "BACKEND=lmstudio"
 if /i "%BACKEND%"=="lms" set "BACKEND=lmstudio"
 if /i "%BACKEND%"=="lm-studio" set "BACKEND=lmstudio"
 if /i "%BACKEND%"=="omlx" set "BACKEND=omlx"
+if /i "%BACKEND%"=="strata" set "BACKEND=strata"
 REM Errors leave through a top-level label: an `exit /b 1` inside a ( ) block
 REM in this script came back as exit code 0 when run via cmd /c (Node exec).
-if not "%BACKEND%"=="ollama" if not "%BACKEND%"=="lmstudio" if not "%BACKEND%"=="omlx" goto bad_backend
+if not "%BACKEND%"=="ollama" if not "%BACKEND%"=="lmstudio" if not "%BACKEND%"=="omlx" if not "%BACKEND%"=="strata" goto bad_backend
 if "%PORT%"=="" (
   if "%BACKEND%"=="ollama" set "PORT=11434"
   if "%BACKEND%"=="lmstudio" set "PORT=1234"
   if "%BACKEND%"=="omlx" set "PORT=8000"
+  if "%BACKEND%"=="strata" set "PORT=8080"
 )
 
 REM Build the base URL (HOST may be a bare host/IP or a full URL)
@@ -168,8 +172,8 @@ goto probe_done
 :probe_auth
 set "PROBE=auth"
 >&2 echo claudelocal: WARNING: %BASE_URL% rejected the auth token (HTTP %HTTP_CODE%)
->&2 echo   Set AUTH_TOKEN in claudelocal.conf or pass -k/--token (the oMLX API key,
->&2 echo   or the LM Studio token). Continuing anyway...
+>&2 echo   Set AUTH_TOKEN in claudelocal.conf or pass -k/--token (the oMLX or Strata
+>&2 echo   API key, or the LM Studio token). Continuing anyway...
 goto probe_done
 :probe_unreachable
 set "PROBE=unreachable"
@@ -212,10 +216,22 @@ REM Context / compaction tuned to the local model's window
 set "CLAUDE_CODE_MAX_CONTEXT_TOKENS=%CONTEXT_TOKENS%"
 set "CLAUDE_CODE_AUTO_COMPACT_WINDOW=%AUTO_COMPACT_TOKENS%"
 
+REM Strata: cap replies at an eighth of the context window (at least 4096), as
+REM its own Claude Code integration does. Thinking counts against the cap, and
+REM too low a cap cuts off compaction summaries and large file writes. A value
+REM already in the environment wins.
+if not "%BACKEND%"=="strata" goto output_cap_done
+if defined CLAUDE_CODE_MAX_OUTPUT_TOKENS goto output_cap_done
+set /a CLAUDE_CODE_MAX_OUTPUT_TOKENS=CONTEXT_TOKENS / 8
+if %CLAUDE_CODE_MAX_OUTPUT_TOKENS% LSS 4096 set "CLAUDE_CODE_MAX_OUTPUT_TOKENS=4096"
+:output_cap_done
+
 REM Keep the session local-first. Tool search needs an API that honors
 REM defer_loading and tool_reference blocks; Ollama, LM Studio, and oMLX don't.
+REM Strata does, and Claude Code only uses it on a custom base URL when asked.
 set "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"
 set "ENABLE_TOOL_SEARCH=false"
+if "%BACKEND%"=="strata" set "ENABLE_TOOL_SEARCH=true"
 
 REM Omit the attribution block (client version + prompt fingerprint) from the
 REM start of the system prompt so it can't disturb the server's prompt cache.
@@ -260,6 +276,7 @@ echo CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=!CLAUDE_CODE_DISABLE_NONESSENTIAL_
 echo ENABLE_TOOL_SEARCH=!ENABLE_TOOL_SEARCH!
 echo CLAUDE_CODE_ATTRIBUTION_HEADER=!CLAUDE_CODE_ATTRIBUTION_HEADER!
 if defined API_TIMEOUT_MS echo API_TIMEOUT_MS=!API_TIMEOUT_MS!
+if "%BACKEND%"=="strata" echo CLAUDE_CODE_MAX_OUTPUT_TOKENS=!CLAUDE_CODE_MAX_OUTPUT_TOKENS!
 echo CLAUDELOCAL_UNSET=ANTHROPIC_API_KEY
 if "%BACKEND%"=="omlx" (echo CLAUDELOCAL_DENY_TOOLS=LSP) else (echo CLAUDELOCAL_DENY_TOOLS=)
 exit /b 0
@@ -283,7 +300,7 @@ call claude %CLAUDE_ARGS%
 exit /b %errorlevel%
 
 :bad_backend
->&2 echo claudelocal: ERROR: unknown backend '%BACKEND%' ^(expected 'ollama', 'lmstudio', or 'omlx'^)
+>&2 echo claudelocal: ERROR: unknown backend '%BACKEND%' ^(expected 'ollama', 'lmstudio', 'omlx', or 'strata'^)
 exit /b 1
 
 :no_model
@@ -292,24 +309,26 @@ exit /b 1
 exit /b 1
 
 :usage
-echo claudelocal - run Claude Code against a local Ollama, LM Studio, or oMLX model.
+echo claudelocal - run Claude Code against a local Ollama, LM Studio, oMLX, or Strata
+echo model.
 echo.
 echo Usage: claudelocal [-c config] [options] [--] [claude args...]
 echo.
 echo Options:
 echo   -m, --model NAME      Model name (overrides config; default: first model
 echo                         the server reports, e.g. qwen2.5-coder:7b)
-echo   -b, --backend NAME    ollama ^| lmstudio ^| omlx   (default: ollama or config)
+echo   -b, --backend NAME    ollama ^| lmstudio ^| omlx ^| strata
+echo                         (default: ollama or config)
 echo   -H, --host HOST       Hostname or IP of the model server (default: localhost)
 echo   -p, --port PORT       Port (default: 11434 for Ollama, 1234 for LM Studio,
-echo                         8000 for oMLX).
+echo                         8000 for oMLX, 8080 for Strata).
 echo                         A non-numeric value after -p is passed to claude
 echo                         (claude's own -p/--print flag keeps working)
 echo   -x, --context N       Context window in tokens (default: 65536 or config);
 echo                         auto-compact window is calculated as 75%% of this
 echo   -k, --token TOKEN     Auth token if the server requires one (LM Studio
-echo                         "Require Authentication", or the oMLX API key);
-echo                         placeholder otherwise
+echo                         "Require Authentication", the oMLX API key, or the
+echo                         Strata API key); placeholder otherwise
 echo   -t, --timeout MS      API request timeout in milliseconds (default:
 echo                         Claude Code's own default of 600000 / 10 min).
 echo                         Raise this if slow local inference causes "API

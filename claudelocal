@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # claudelocal - run Claude Code CLI against a local model hosted on Ollama,
-# LM Studio, or oMLX. Works with localhost or any reachable host/IP on your network.
+# LM Studio, oMLX, or Strata. Works with localhost or any reachable host/IP on your network.
 #
 #   Ollama:    Anthropic-compatible endpoint at http://<host>:11434  (no /v1 suffix)
 #   LM Studio: Anthropic-compatible endpoint at http://<host>:1234   (no /v1 suffix)
 #   oMLX:      Anthropic-compatible endpoint at http://<host>:8000   (no /v1 suffix)
+#   Strata:    Anthropic-compatible endpoint at http://<host>:8080   (no /v1 suffix)
 #
 # Docs:
 #   https://docs.ollama.com/integrations/claude-code
 #   https://lmstudio.ai/docs/integrations/claude-code
 #   https://github.com/jundot/omlx
+#   https://github.com/Niko1221/Strata
 set -euo pipefail
 
 resolve_script_dir() {
@@ -27,13 +29,13 @@ SCRIPT_DIR="$(resolve_script_dir "${BASH_SOURCE[0]}")"
 # ---------------------------------------------------------------------------
 # Defaults (overridden by config file, then by command-line flags)
 # ---------------------------------------------------------------------------
-BACKEND="ollama"          # ollama | lmstudio | omlx
+BACKEND="ollama"          # ollama | lmstudio | omlx | strata
 HOST="localhost"          # hostname or IP; may include http:// scheme
-PORT=""                   # blank = backend default (11434 ollama / 1234 lmstudio / 8000 omlx)
+PORT=""                   # blank = backend default (11434 ollama / 1234 lmstudio / 8000 omlx / 8080 strata)
 MODEL=""                  # blank = auto-detect first model the server reports
 CONTEXT_TOKENS="65536"    # context window to tell Claude Code about
 AUTO_COMPACT_TOKENS=""    # blank = auto-calculate as 75% of CONTEXT_TOKENS
-AUTH_TOKEN=""             # blank = placeholder ("ollama" / "lmstudio" / "omlx")
+AUTH_TOKEN=""             # blank = placeholder ("ollama" / "lmstudio" / "omlx" / "strata")
 TIMEOUT_MS=""             # blank = Claude Code's own default (600000ms / 10 min)
 ENV_MODE=0                # 1 = --env: print the resolved environment, don't launch claude
 
@@ -41,24 +43,26 @@ CONFIG_FILE="$SCRIPT_DIR/claudelocal.conf"
 
 usage() {
   cat <<'EOF'
-claudelocal - run Claude Code against a local Ollama, LM Studio, or oMLX model.
+claudelocal - run Claude Code against a local Ollama, LM Studio, oMLX, or Strata
+model.
 
 Usage: claudelocal [options] [--] [claude args...]
 
 Options:
   -m, --model NAME      Model name (overrides config; default: first model
                         the server reports, e.g. qwen2.5-coder:7b)
-  -b, --backend NAME    ollama | lmstudio | omlx   (default: ollama or config)
+  -b, --backend NAME    ollama | lmstudio | omlx | strata
+                        (default: ollama or config)
   -H, --host HOST       Hostname or IP of the model server (default: localhost)
   -p, --port PORT       Port (default: 11434 for Ollama, 1234 for LM Studio,
-                        8000 for oMLX).
+                        8000 for oMLX, 8080 for Strata).
                         A non-numeric value after -p is passed to claude
                         (claude's own -p/--print flag keeps working)
   -x, --context N       Context window in tokens (default: 65536 or config);
                         auto-compact window is calculated as 75% of this
   -k, --token TOKEN     Auth token if the server requires one (LM Studio
-                        "Require Authentication", or the oMLX API key);
-                        placeholder otherwise
+                        "Require Authentication", the oMLX API key, or the
+                        Strata API key); placeholder otherwise
   -t, --timeout MS      API request timeout in milliseconds (default: Claude
                         Code's own default of 600000 / 10 min). Raise this if
                         slow local inference causes "API Error (Request timed
@@ -154,7 +158,8 @@ case "$(echo "$BACKEND" | tr '[:upper:]' '[:lower:]')" in
   ollama)             BACKEND="ollama";   DEFAULT_PORT="11434" ;;
   lmstudio|lm-studio|lms) BACKEND="lmstudio"; DEFAULT_PORT="1234" ;;
   omlx)               BACKEND="omlx";     DEFAULT_PORT="8000" ;;
-  *) echo "claudelocal: ERROR: unknown backend '$BACKEND' (expected 'ollama', 'lmstudio', or 'omlx')" >&2; exit 1 ;;
+  strata)             BACKEND="strata";   DEFAULT_PORT="8080" ;;
+  *) echo "claudelocal: ERROR: unknown backend '$BACKEND' (expected 'ollama', 'lmstudio', 'omlx', or 'strata')" >&2; exit 1 ;;
 esac
 
 [ -z "$PORT" ] && PORT="$DEFAULT_PORT"
@@ -189,8 +194,8 @@ if command -v curl >/dev/null 2>&1; then
       MODELS_JSON=""
       PROBE="auth"
       echo "claudelocal: WARNING: $BASE_URL rejected the auth token (HTTP $HTTP_CODE)" >&2
-      echo "  Set AUTH_TOKEN in claudelocal.conf or pass -k/--token (the oMLX API key," >&2
-      echo "  or the LM Studio token). Continuing anyway..." >&2 ;;
+      echo "  Set AUTH_TOKEN in claudelocal.conf or pass -k/--token (the oMLX or Strata" >&2
+      echo "  API key, or the LM Studio token). Continuing anyway..." >&2 ;;
     000|"")
       MODELS_JSON=""
       PROBE="unreachable"
@@ -246,10 +251,25 @@ fi
 export CLAUDE_CODE_MAX_CONTEXT_TOKENS="$CONTEXT_TOKENS"
 export CLAUDE_CODE_AUTO_COMPACT_WINDOW="$AUTO_COMPACT_TOKENS"
 
+# Strata: cap replies at an eighth of the context window (at least 4096), as
+# its own Claude Code integration does. Thinking counts against the cap, and
+# too low a cap cuts off compaction summaries and large file writes. A value
+# already in the environment wins.
+if [ "$BACKEND" = "strata" ] && [ -z "${CLAUDE_CODE_MAX_OUTPUT_TOKENS:-}" ]; then
+  CLAUDE_CODE_MAX_OUTPUT_TOKENS=$(( CONTEXT_TOKENS / 8 ))
+  if [ "$CLAUDE_CODE_MAX_OUTPUT_TOKENS" -lt 4096 ]; then CLAUDE_CODE_MAX_OUTPUT_TOKENS=4096; fi
+  export CLAUDE_CODE_MAX_OUTPUT_TOKENS
+fi
+
 # Keep the session local-first. Tool search needs an API that honors
 # defer_loading and tool_reference blocks; Ollama, LM Studio, and oMLX don't.
+# Strata does, and Claude Code only uses it on a custom base URL when asked.
 export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
-export ENABLE_TOOL_SEARCH=false
+if [ "$BACKEND" = "strata" ]; then
+  export ENABLE_TOOL_SEARCH=true
+else
+  export ENABLE_TOOL_SEARCH=false
+fi
 
 # Omit the attribution block (client version + prompt fingerprint) from the
 # start of the system prompt so it can't disturb the server's prompt cache.
@@ -308,6 +328,7 @@ if [ "$ENV_MODE" = 1 ]; then
   echo "ENABLE_TOOL_SEARCH=$ENABLE_TOOL_SEARCH"
   echo "CLAUDE_CODE_ATTRIBUTION_HEADER=$CLAUDE_CODE_ATTRIBUTION_HEADER"
   if [ -n "$TIMEOUT_MS" ]; then echo "API_TIMEOUT_MS=$API_TIMEOUT_MS"; fi
+  if [ "$BACKEND" = "strata" ]; then echo "CLAUDE_CODE_MAX_OUTPUT_TOKENS=$CLAUDE_CODE_MAX_OUTPUT_TOKENS"; fi
   echo "CLAUDELOCAL_UNSET=ANTHROPIC_API_KEY"
   if [ "$BACKEND" = "omlx" ]; then
     echo "CLAUDELOCAL_DENY_TOOLS=LSP"
